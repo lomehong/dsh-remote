@@ -216,6 +216,37 @@ describe('proxyRequest 健壮性（回归 I2）', () => {
   })
 })
 
+describe('proxyRequest 健壮性（回归：响应头到达前 abort）', () => {
+  it('客户端在响应头到达前 abort → upstream 请求在 500ms 内被回收', async () => {
+    let signalUpstreamClosed: () => void = () => {}
+    const upstreamClosed = new Promise<void>((resolve) => { signalUpstreamClosed = resolve })
+    // 上游 400ms 才返回响应头，之后无限慢速流且永不 end：请求 socket 不 close 即为泄漏
+    const slow = createServer((req, res) => {
+      req.socket.on('close', signalUpstreamClosed)
+      setTimeout(() => {
+        if (req.socket.destroyed) return
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        const timer = setInterval(() => res.write('chunk\n'), 50)
+        res.on('close', () => clearInterval(timer))
+      }, 400)
+    })
+    const slowPort = await listenOn(slow)
+    const gw = await listenGateway((req, res) => proxyRequest({ host: '127.0.0.1', port: slowPort }, req, res))
+    try {
+      const ac = new AbortController()
+      const pending = fetch(`http://127.0.0.1:${gw.port}/slow-ttfb`, { signal: ac.signal })
+      setTimeout(() => ac.abort(), 100) // 落在 400ms 响应头到达之前
+      await expect(pending).rejects.toThrow()
+      const start = Date.now()
+      await withTimeout(upstreamClosed, 2000, 'upstream 请求未回收（响应头到达前中断即泄漏）')
+      expect(Date.now() - start).toBeLessThan(500)
+    } finally {
+      await closeGateway(gw)
+      await closeServer(slow)
+    }
+  })
+})
+
 // 裸 socket RST 探针：duringHandshake 在发出握手请求后约 15ms RST——足够让网关解析出 upgrade 并进入
 // 握手窗口（Node 已摘除内部处理），又稳落在 upstream 延迟的 101 之前；afterHandshake 则等 101 后再 RST
 async function rstProbe(port: number, path: string, mode: 'duringHandshake' | 'afterHandshake'): Promise<void> {

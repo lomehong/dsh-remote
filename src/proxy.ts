@@ -59,12 +59,13 @@ export function proxyRequest(upstream: Upstream, req: IncomingMessage, res: Serv
     res.writeHead(ures.statusCode ?? 502, headers)
     ures.pipe(res)
     ures.on('error', () => res.destroy())
-    // 客户端中断（如浏览器关页）：pipe 不传播 destroy，必须显式回收上游流，否则上游连接永久泄漏
-    res.on('close', () => { if (!res.writableFinished) client.destroy() })
   })
+  // 客户端中断（如浏览器关页）：pipe 不传播 destroy，必须显式回收上游流，否则上游连接永久泄漏。
+  // 必须在 response 之前同步挂上 —— 中断若发生在响应头到达前，response 回调永不执行，此处漏挂即永久泄漏
+  res.on('close', () => { if (!res.writableFinished) client.destroy() })
   client.on('error', (error) => {
-    if (res.headersSent) {
-      // 头已发出：无法再回 502，直接断开，避免向已开始的响应体追加错误文本
+    if (res.headersSent || res.destroyed) {
+      // 头已发出或客户端已断开：无法再回 502，直接断开，避免向已开始的/已死的响应追加错误文本
       res.destroy()
       return
     }
