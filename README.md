@@ -100,7 +100,7 @@ POST /__remote/pair        body: {"code": "<一次性配对码>"}
 git clone https://github.com/lomehong/dsh-remote.git
 cd dsh-remote
 npm install
-npm test            # vitest：39 个行为锁定测试（直接跑 src/*.ts 源码）
+npm test            # vitest：40 个行为锁定测试（直接跑 src/*.ts 源码）
 npm run typecheck   # tsc 严格类型检查（宿主端 + 客户端）
 npm run build       # tsc 编译 src/ → lib/ + esbuild 重建 lib/client.js
 ```
