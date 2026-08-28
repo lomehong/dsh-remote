@@ -31,6 +31,7 @@ function makeHarness(upstreamPort: number) {
   const disposers: Array<() => void> = []
   const routes: Record<string, RouteHandler> = {}
   const logs: string[] = []
+  const injectFns: Array<(scoped: any) => void> = []
   const webServer = {
     host: '127.0.0.1',
     port: upstreamPort,
@@ -51,6 +52,7 @@ function makeHarness(upstreamPort: number) {
     get: (_name: string) => undefined,
     inject: (names: string[], fn: (scoped: any) => void) => {
       if (names.includes('webServer')) {
+        injectFns.push(fn)
         fn({ webServer, effect: (factory: () => () => void) => { disposers.push(factory()) } })
       }
     },
@@ -75,7 +77,15 @@ function makeHarness(upstreamPort: number) {
     })
     return { status, body: JSON.parse(raw) }
   }
-  return { ctx, logs, routes, call, dispose: () => { for (const d of disposers) d() } }
+  // 模拟 cordis 重注入：旧作用域 dispose 后 webServer 重新在位，注入回调重跑
+  // （新作用域的 effect 清理独立捕获，不与旧作用域共享）
+  const reinject = (): void => {
+    const fn = injectFns.at(-1)
+    if (fn === undefined) throw new Error('no injection to re-fire')
+    fn({ webServer, effect: (factory: () => () => void) => { disposers.push(factory()) } })
+  }
+  const dispose = (): void => { for (const d of disposers) d() }
+  return { ctx, logs, routes, call, dispose, reinject }
 }
 
 /** 轮询直至条件成立（网关启停是异步的）。 */
@@ -220,7 +230,7 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
     hooks.setSource(() => ({ enabled: true, port: 0, bind: '127.0.0.1' }))
     hooks.onChange()
 
-    await waitFor('restart chain settles', () => h.logs.some((l) => l.includes('插件已卸载')))
+    await waitFor('restart chain settles', () => h.logs.some((l) => l.includes('已卸载')))
     expect(h.logs.some((l) => l.includes('网关已监听'))).toBe(false)
     const status = await h.call('/dsh-remote/api/status').catch(() => null) // 路由已注销 → null
     expect(status).toBeNull()
@@ -229,5 +239,31 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
     await new Promise((r) => setTimeout(r, 50))
     process.off('unhandledRejection', onUnhandled)
     expect(unhandled).toEqual([])
+  })
+
+  it('webServer 重注入（如改端口热重载）后网关可复生', async () => {
+    // 回归：dispose 闩原为 apply 级，旧作用域清理会永久挡住重注入后的启动。
+    // 现闩按作用域隔离：卸载旧作用域 → 重注入 → 配置启用 → 网关应重新拉起。
+    const h = makeHarness(upstreamPort)
+    await apply(h.ctx as any, { enabled: false, port: 0, bind: '127.0.0.1' })
+    const hooks = settingsHooks()
+
+    // 旧作用域卸载 → webServer 重新在位（cordis 重注入）
+    h.dispose()
+    h.reinject()
+
+    hooks.setSource(() => ({ enabled: true, port: 0, bind: '127.0.0.1' }))
+    hooks.onChange()
+    await waitFor('gateway restarted', () => h.logs.some((l) => l.includes('网关已监听')))
+
+    const status = await h.call('/dsh-remote/api/status') // 新作用域重新注册了路由
+    expect(status.body.enabled).toBe(true)
+    expect(status.body.listening).toBe(true)
+    expect(typeof status.body.gatewayPort).toBe('number')
+
+    // 清理新作用域：路由注销（effect 清理链亦会关闭网关）
+    h.dispose()
+    await waitFor('routes unregistered after final dispose', async () =>
+      (await h.call('/dsh-remote/api/status').catch(() => null)) === null)
   })
 })
