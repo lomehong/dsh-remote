@@ -1,0 +1,156 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import { proxyRequest, proxyUpgrade, rewriteForwardHeaders } from '../src/proxy.ts'
+
+let upstream: Server
+let upstreamPort = 0
+const seen: Array<{
+  path: string
+  method: string
+  host?: string | undefined
+  origin?: string | undefined
+  referer?: string | undefined
+  body: string
+}> = []
+
+beforeAll(async () => {
+  upstream = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => {
+      seen.push({
+        path: req.url ?? '/',
+        method: req.method ?? '',
+        host: req.headers.host,
+        origin: typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
+        referer: typeof req.headers.referer === 'string' ? req.headers.referer : undefined,
+        body: Buffer.concat(chunks).toString('utf8'),
+      })
+      if (req.url === '/set-cookie') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': ['a=1; HttpOnly', 'b=2'] })
+        res.end('ok')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-upstream': 'yes' })
+      res.end(`dsh says: ${req.url}`)
+    })
+  })
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+  upstreamPort = (upstream.address() as { port: number }).port
+})
+afterAll(async () => {
+  upstream.closeAllConnections()
+  await new Promise<void>((resolve) => upstream.close(() => resolve()))
+})
+
+function listenGateway(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<{ server: Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = createServer(handler)
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: (server.address() as { port: number }).port }))
+  })
+}
+
+async function closeGateway(gw: { server: Server }): Promise<void> {
+  gw.server.closeAllConnections()
+  await new Promise<void>((resolve) => gw.server.close(() => resolve()))
+}
+
+describe('rewriteForwardHeaders', () => {
+  it('Host 改为 upstream；Origin/Referer 中的网关 authority 同步改写；剥离 hop-by-hop', () => {
+    const headers = rewriteForwardHeaders(
+      { headers: { host: '192.168.1.5:3090', origin: 'http://192.168.1.5:3090', referer: 'http://192.168.1.5:3090/settings', connection: 'keep-alive', 'x-keep': '1' } } as any,
+      { host: '127.0.0.1', port: 3080 },
+    )
+    expect(headers.host).toBe('127.0.0.1:3080')
+    expect(headers.origin).toBe('http://127.0.0.1:3080')
+    expect(headers.referer).toBe('http://127.0.0.1:3080/settings')
+    expect(headers.connection).toBeUndefined()
+    expect(headers['x-keep']).toBe('1')
+  })
+})
+
+describe('proxyRequest（端到端）', () => {
+  it('透传 method/path/query/body 与响应头/status；Set-Cookie 多值保留', async () => {
+    const gw = await listenGateway((req, res) => proxyRequest({ host: '127.0.0.1', port: upstreamPort }, req, res))
+    try {
+      const res = await fetch(`http://127.0.0.1:${gw.port}/api/sessions?x=1`, {
+        method: 'POST', headers: { 'content-type': 'application/json', host: `127.0.0.1:${gw.port}` }, body: '{"a":1}',
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('x-upstream')).toBe('yes')
+      expect(await res.text()).toBe('dsh says: /api/sessions?x=1')
+      expect(seen.at(-1)).toMatchObject({ method: 'POST', path: '/api/sessions?x=1', body: '{"a":1}', host: `127.0.0.1:${upstreamPort}` })
+
+      const res2 = await fetch(`http://127.0.0.1:${gw.port}/set-cookie`)
+      expect(res2.headers.getSetCookie()).toEqual(['a=1; HttpOnly', 'b=2'])
+    } finally {
+      await closeGateway(gw)
+    }
+  })
+
+  it('upstream 不可达 → 502', async () => {
+    const gw = await listenGateway((req, res) => proxyRequest({ host: '127.0.0.1', port: 1 }, req, res))
+    try {
+      const res = await fetch(`http://127.0.0.1:${gw.port}/x`)
+      expect(res.status).toBe(502)
+    } finally {
+      await closeGateway(gw)
+    }
+  })
+})
+
+describe('proxyUpgrade（端到端）', () => {
+  it('WS 握手转发：101 透传 + 双向字节 echo；Host 头改写', async () => {
+    // upstream 已有 HTTP handler；这里给它挂 upgrade 处理（echo 服务）
+    const seenUpgradeHosts: string[] = []
+    upstream.on('upgrade', (req, socket, head) => {
+      seenUpgradeHosts.push(String(req.headers.host))
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: fake\r\n\r\n')
+      if (head.length > 0) socket.write(head)
+      socket.pipe(socket)
+    })
+    const gw = await listenGateway((req, res) => proxyRequest({ host: '127.0.0.1', port: upstreamPort }, req, res))
+    // 注意：listenGateway 只挂了 request handler —— 网关侧需为 upgrade 单独接 proxyUpgrade
+    gw.server.on('upgrade', (req, socket, head) => {
+      proxyUpgrade({ host: '127.0.0.1', port: upstreamPort }, req, socket, head)
+    })
+    try {
+      const result = await wsEchoProbe(gw.port)
+      expect(result.handshook).toBe(true)
+      expect(result.echoed).toBe(true)
+      expect(seenUpgradeHosts.at(-1)).toBe(`127.0.0.1:${upstreamPort}`) // Host 已改写
+    } finally {
+      await closeGateway(gw)
+    }
+  })
+})
+
+// 裸 socket WS 探针：发握手请求，验证 101 与双向字节透传（重复 resolve 无害）
+async function wsEchoProbe(port: number): Promise<{ handshook: boolean; echoed: boolean }> {
+  const { connect } = await import('node:net')
+  return new Promise((resolve) => {
+    const socket = connect(port, '127.0.0.1', () => {
+      const key = Buffer.from('0123456789abcdef').toString('base64')
+      socket.write(`GET /api/events.mux HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`)
+    })
+    let buffer = ''
+    let handshook = false
+    const timeout = setTimeout(() => { socket.destroy(); resolve({ handshook, echoed: false }) }, 5000)
+    socket.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('latin1')
+      if (!handshook && buffer.startsWith('HTTP/1.1 101')) {
+        handshook = true
+        buffer = ''
+        socket.write('ECHO-ME')
+        return
+      }
+      if (handshook && buffer.includes('ECHO-ME')) {
+        clearTimeout(timeout)
+        socket.destroy()
+        resolve({ handshook: true, echoed: true })
+      }
+    })
+    socket.on('error', () => { clearTimeout(timeout); resolve({ handshook, echoed: false }) })
+    socket.on('close', () => { if (!handshook || !buffer.includes('ECHO-ME')) { clearTimeout(timeout); resolve({ handshook, echoed: false }) } })
+  })
+}
