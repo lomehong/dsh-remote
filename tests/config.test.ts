@@ -10,6 +10,10 @@ describe('normalizeConfigInput', () => {
     expect(() => normalizeConfigInput({ port: 70_000 })).toThrow()
     expect(() => normalizeConfigInput({ port: -1 })).toThrow()
   })
+  it('port 为 null / 空串时归回默认 3090（而非 0）', () => {
+    expect(normalizeConfigInput({ port: null }).port).toBe(3090)
+    expect(normalizeConfigInput({ port: '' }).port).toBe(3090)
+  })
   it('bind 空串回退 0.0.0.0；非对象拒绝', () => {
     expect(normalizeConfigInput({ bind: ' 100.101.2.3 ' }).bind).toBe('100.101.2.3')
     expect(normalizeConfigInput({ bind: '' }).bind).toBe('0.0.0.0')
