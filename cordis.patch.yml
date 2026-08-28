@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-remote
+      name: '@dsh-extra/dsh-remote'
+      # webServer 非硬依赖：缺席时不建网关（仅注册不到管理路由），不致命。
+      config: {}
