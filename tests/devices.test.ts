@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { devicesFilePath, loadDevices } from '../src/devices.ts'
@@ -35,6 +35,21 @@ describe('DeviceStore', () => {
     expect(store.verify(token)).toBeUndefined()
   })
 
+  it('flush 失败保留 dirty：障碍移除后再次 flush 重试落盘', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
+    // devices.json 先建成目录：loadDevices 读到即当全新表；rename 目标是目录 → persist 必失败
+    await mkdir(devicesFilePath(dir), { recursive: true })
+    const store = await loadDevices(dir)
+    const token = generateDeviceToken()
+    store.add({ token, name: '重试机' }, 1_000) // add 内部同步 persist 失败被吞，设备仅在内存
+    await expect(store.flush()).rejects.toThrow() // flush 失败，dirty 必须保留
+    await rm(devicesFilePath(dir), { recursive: true })
+    await store.flush() // dirty 仍在 → 重试落盘成功
+    const reloaded = await loadDevices(dir)
+    expect(reloaded.verify(token)?.name).toBe('重试机')
+    expect(reloaded.list()).toHaveLength(1)
+  })
+
   it('重启加载：损坏文件当全新表，合法文件恢复设备', async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
     const store = await loadDevices(dir)
@@ -51,6 +66,5 @@ describe('DeviceStore', () => {
 })
 
 async function writeFileRaw(path: string, content: string): Promise<void> {
-  const { writeFile } = await import('node:fs/promises')
   await writeFile(path, content, 'utf8')
 }

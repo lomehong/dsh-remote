@@ -5,7 +5,7 @@
  * 落盘用同步写：add/rename/revoke 同步返回前文件已就位（无半落盘窗口，后续读/清理不与写入竞争）；
  * 设备表量极小，同步开销可忽略。
  */
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -33,11 +33,13 @@ export interface DeviceStore {
   /** 呈递令牌 → 对应设备；无效/已吊销 → undefined。 */
   verify(token: string): DeviceRecord | undefined
   add(input: { token: string; name?: string; ua?: string }, now: number): DeviceRecord
+  /** 返回内部引用，调用方不得修改；经管理 API 暴露前须去除 tokenHash。 */
   list(): DeviceRecord[]
   rename(id: string, name: string): boolean
   revoke(id: string): boolean
   /** 更新最近活跃（内存态；随 flush/其他变更落盘）。 */
   touch(id: string, now: number): void
+  /** 写入所有待落盘变更；失败时保留 dirty 并抛出，可再次 flush 重试。 */
   flush(): Promise<void>
 }
 
@@ -65,14 +67,27 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
   }
 
   let dirty = false
-  /** 临时文件 + 原子重命名，全程同步（单线程内无交错，tmp 名不会自撞）。 */
+  /**
+   * 临时文件 + 原子重命名，全程同步（单线程内无交错，tmp 名不会自撞）。
+   * 成功路径末尾才清 dirty；失败清理 tmp 后原样抛出、dirty 保留，由后续 flush 重试。
+   */
   const persist = (): void => {
     const path = devicesFilePath(homeDir)
     mkdirSync(dirname(path), { recursive: true })
     const payload: PersistedFile = { version: 1, devices: [...devices.values()] }
     const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
-    writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-    renameSync(tmp, path)
+    try {
+      writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+      renameSync(tmp, path)
+    } catch (err) {
+      try {
+        unlinkSync(tmp) // best-effort 清理，避免遗留孤儿 tmp
+      } catch {
+        // tmp 可能尚未创建
+      }
+      throw err
+    }
+    dirty = false
   }
 
   return {
@@ -137,8 +152,7 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
     },
     async flush() {
       if (!dirty) return
-      dirty = false
-      persist()
+      persist() // 成功时在 persist 末尾清 dirty；失败保留 dirty 并向上抛出
     },
   }
 }
