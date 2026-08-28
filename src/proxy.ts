@@ -59,11 +59,16 @@ export function proxyRequest(upstream: Upstream, req: IncomingMessage, res: Serv
     res.writeHead(ures.statusCode ?? 502, headers)
     ures.pipe(res)
     ures.on('error', () => res.destroy())
+    // 客户端中断（如浏览器关页）：pipe 不传播 destroy，必须显式回收上游流，否则上游连接永久泄漏
+    res.on('close', () => { if (!res.writableFinished) client.destroy() })
   })
   client.on('error', (error) => {
-    if (!res.headersSent) {
-      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+    if (res.headersSent) {
+      // 头已发出：无法再回 502，直接断开，避免向已开始的响应体追加错误文本
+      res.destroy()
+      return
     }
+    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
     res.end(`远程网关无法连接本地 dsh（${upstreamAuthority(upstream)}）：${error.message}`)
   })
   req.pipe(client)
@@ -75,6 +80,17 @@ export function proxyUpgrade(upstream: Upstream, req: IncomingMessage, socket: D
   const headers = rewriteForwardHeaders(req, upstream)
   headers.connection = 'upgrade'
   headers.upgrade = String(req.headers.upgrade ?? 'websocket')
+  let usocket: Duplex | undefined
+  const teardown = (): void => {
+    // 双向销毁：RST 不产生 FIN，pipe 不会自然结束对端，必须显式回收两侧与上游请求（destroy 幂等）
+    socket.destroy()
+    usocket?.destroy()
+    client.destroy()
+  }
+  // 握手窗口期（upstream 101 返回前）Node 已摘除 socket 的内部处理，其上没有任何 error 监听；
+  // 必须在创建上游请求前同步挂上，否则客户端此刻 RST 的 ECONNRESET 会以 uncaughtException 击穿进程
+  socket.on('error', teardown)
+  socket.on('close', teardown)
   const client = httpRequest({
     host: upstream.host,
     port: upstream.port,
@@ -82,10 +98,8 @@ export function proxyUpgrade(upstream: Upstream, req: IncomingMessage, socket: D
     path: req.url,
     headers,
   })
-  const teardown = (): void => {
-    socket.destroy()
-  }
-  client.on('upgrade', (ures, usocket, uhead) => {
+  client.on('upgrade', (ures, upgraded, uhead) => {
+    usocket = upgraded
     let front = `HTTP/1.1 ${ures.statusCode ?? 101} ${ures.statusMessage ?? ''}\r\n`
     for (const [name, value] of Object.entries(ures.headers)) {
       if (value === undefined) continue
@@ -93,12 +107,10 @@ export function proxyUpgrade(upstream: Upstream, req: IncomingMessage, socket: D
     }
     socket.write(`${front}\r\n`)
     if (uhead.length > 0) socket.write(uhead)
-    usocket.pipe(socket)
-    socket.pipe(usocket)
-    usocket.on('error', teardown)
-    socket.on('error', teardown)
-    usocket.on('close', teardown)
-    socket.on('close', teardown)
+    upgraded.pipe(socket)
+    socket.pipe(upgraded)
+    upgraded.on('error', teardown)
+    upgraded.on('close', teardown)
   })
   client.on('response', (ures) => {
     // upstream 拒绝升级：原样回状态码后断开
