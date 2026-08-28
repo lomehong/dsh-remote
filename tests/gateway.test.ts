@@ -153,6 +153,32 @@ describe('startGateway 认证与配对', () => {
     const after = await fetch(`http://127.0.0.1:${gw.port}/api/echo`, { headers: { 'x-remote-token': token } })
     expect(after.status).toBe(401)
   })
+
+  it('跨源 POST 配对 → 403（sameOrigin 围栏）', async () => {
+    const gw = await startTestGateway(await freshStore(), new PairingStore())
+    const res = await fetch(`http://127.0.0.1:${gw.port}/__remote/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+      body: JSON.stringify({ code: 'anything' }),
+    })
+    expect(res.status).toBe(403)
+    expect(await res.text()).toContain('cross-origin')
+  })
+
+  it('POST query 带有效码但正文坏 JSON → 403（正文为准，query 不回退），且码未被烧掉', async () => {
+    const pairings = new FixedPairingStore(CODE)
+    const gw = await startTestGateway(await freshStore(), pairings)
+    pairings.create()
+    const bad = await fetch(`http://127.0.0.1:${gw.port}/__remote/pair?code=${encodeURIComponent(CODE)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{broken',
+    })
+    expect(bad.status).toBe(403)
+    // 坏尝试不消耗有效码：随后的正常 POST 仍可配对
+    const { token } = await pairViaPost(gw, pairings)
+    expect(token).not.toBe('')
+  })
 })
 
 describe('credentialToken（单元）', () => {
@@ -175,6 +201,16 @@ describe('WebSocket upgrade 分流', () => {
     const ok = await wsProbe(gw.port, '/api/events.mux', token)
     expect(ok.status).toBe(101)
     expect(ok.echoed).toBe(true)
+  })
+
+  it('坏令牌升级 30 次内 401，第 31 次 → 429（与 HTTP 路径共用坏令牌限速）', async () => {
+    const gw = await startTestGateway(await freshStore(), new PairingStore())
+    for (let i = 0; i < 30; i++) {
+      const probe = await wsProbe(gw.port, '/api/events.mux', 'bad-token')
+      expect(probe.status).toBe(401)
+    }
+    const limited = await wsProbe(gw.port, '/api/events.mux', 'bad-token')
+    expect(limited.status).toBe(429)
   })
 })
 

@@ -123,6 +123,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
     let wantsJson = false
     if (req.method === 'POST') {
       if (!sameOrigin(req)) { deny(res, 403, 'cross-origin denied'); return }
+      code = '' // POST 以正文为准：先清空，杜绝坏正文回退到 query 里的码
       try {
         const parsed = JSON.parse(await readBody(req)) as { code?: unknown }
         code = String(parsed.code ?? '')
@@ -143,7 +144,9 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       return
     }
     const token = generateDeviceToken()
-    const ua = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined
+    // UA 攻击者可控且随设备记录落盘：截断防御（名称取自时间戳，与 UA 无关）
+    const rawUa = req.headers['user-agent']
+    const ua = typeof rawUa === 'string' && rawUa !== '' ? rawUa.slice(0, 200) : undefined
     const stamp = new Date(now()).toISOString().slice(0, 16).replace('T', ' ')
     const device = store.add({ token, name: `远程设备 ${stamp}`, ...(ua !== undefined ? { ua } : {}) }, now())
     log(`新设备已配对：${device.name}（${device.id}）`)
@@ -166,7 +169,17 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       if (url.pathname === '/__remote/pair') { rawDeny(socket, 405, 'method not allowed'); return }
       const token = credentialToken(req)
       const device = token === undefined ? undefined : store.verify(token)
-      if (device === undefined) { rawDeny(socket, 401, 'unauthorized: pair required'); return }
+      if (device === undefined) {
+        if (token !== undefined && !badTokenLimiter.check(clientKey(req))) {
+          // 带无效令牌的升级与 HTTP 路径同规：计入坏令牌限速（防爆破）；裸 401 不计
+          log(`WS 升级被拒绝（坏令牌限速）来自 ${clientKey(req)}`)
+          rawDeny(socket, 429, '尝试过于频繁，请稍后再试')
+          return
+        }
+        log(`WS 升级被拒绝（未认证）来自 ${clientKey(req)}`)
+        rawDeny(socket, 401, 'unauthorized: pair required')
+        return
+      }
       store.touch(device.id, now())
       proxyUpgrade(upstream, req, socket, head)
     } catch {
