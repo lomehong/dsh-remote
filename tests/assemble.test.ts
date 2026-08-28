@@ -203,4 +203,31 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
     expect(status.body.enabled).toBe(false)
     expect(status.body.listening).toBe(false)
   })
+
+  it('dispose 后到达的配置变更不拉起网关（孤儿监听回归）', async () => {
+    // 回归：onChange 的重启链在 startGateway await 期间发生卸载时，句柄会在 dispose
+    // 检查之后才赋值 → 留下一个永远无人关闭的监听。现在 disposed 置位后彻底跳过启动。
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+
+    const h = makeHarness(upstreamPort)
+    await apply(h.ctx as any, { enabled: false, port: 0, bind: '127.0.0.1' })
+    const hooks = settingsHooks()
+
+    // 先卸载（scoped effect 清理：置 disposed + 注销路由），再来的配置变更必须被挡住
+    h.dispose()
+    hooks.setSource(() => ({ enabled: true, port: 0, bind: '127.0.0.1' }))
+    hooks.onChange()
+
+    await waitFor('restart chain settles', () => h.logs.some((l) => l.includes('插件已卸载')))
+    expect(h.logs.some((l) => l.includes('网关已监听'))).toBe(false)
+    const status = await h.call('/dsh-remote/api/status').catch(() => null) // 路由已注销 → null
+    expect(status).toBeNull()
+
+    // 让微任务队列彻底排空后再检查无 unhandled rejection
+    await new Promise((r) => setTimeout(r, 50))
+    process.off('unhandledRejection', onUnhandled)
+    expect(unhandled).toEqual([])
+  })
 })

@@ -130,19 +130,33 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
   const rt: RemoteConfig = normalizeConfigInput(config)
   let upstream: Upstream | undefined
   let gateway: GatewayHandle | undefined
+  // 卸载标记：置位后重启链不再拉起网关；in-flight 的 startGateway 若在置位后才
+  // resolve，立即关闭其句柄——否则 dispose 与重启竞争会遗留一个永远无人关闭的监听
+  let disposed = false
 
   // 网关生命周期：关闭旧实例 → enabled 且 upstream 在位时重新拉起。
   // 串行化重启（装配期 inject 回调与 apply 末尾可能各触发一次），避免并发双监听
   let restarting: Promise<void> = Promise.resolve()
   const restartGateway = (): Promise<void> => {
     restarting = restarting.catch(() => {}).then(async () => {
+      if (disposed) {
+        record('跳过网关启动：插件已卸载')
+        return
+      }
       if (gateway !== undefined) {
         const old = gateway
         gateway = undefined
         await old.close()
       }
       if (rt.enabled && upstream !== undefined) {
-        gateway = await startGateway({ bind: rt.bind, port: rt.port, upstream, store, pairings, log: record })
+        const handle = await startGateway({ bind: rt.bind, port: rt.port, upstream, store, pairings, log: record })
+        if (disposed) {
+          // startGateway await 期间发生了卸载：立即关闭，不落引用（防孤儿监听）
+          await handle.close()
+          record('网关已创建但插件已卸载，立即关闭')
+          return
+        }
+        gateway = handle
         record(`网关已监听 ${rt.bind}:${gateway.port}`)
       }
     })
@@ -233,9 +247,16 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
         sendJson(res, 403, { ok: false, error: 'cross-origin denied' })
         return
       }
-      const body = JSON.parse(await readBody(req)) as { id?: unknown; name?: unknown }
+      let body: { id?: unknown; name?: unknown }
+      try {
+        body = JSON.parse(await readBody(req)) as { id?: unknown; name?: unknown }
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
       const id = typeof body.id === 'string' ? body.id : ''
-      const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : ''
+      // name 是不可信输入：trim 后剥离控制字符/换行（防经环形日志注入伪造日志行），再截断 60
+      const name = typeof body.name === 'string' ? body.name.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 60) : ''
       if (id === '' || name === '') {
         sendJson(res, 400, { ok: false, error: 'id 与 name（1-60 字符）必填' })
         return
@@ -257,7 +278,13 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
         sendJson(res, 403, { ok: false, error: 'cross-origin denied' })
         return
       }
-      const body = JSON.parse(await readBody(req)) as { id?: unknown }
+      let body: { id?: unknown }
+      try {
+        body = JSON.parse(await readBody(req)) as { id?: unknown }
+      } catch {
+        sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' })
+        return
+      }
       const id = typeof body.id === 'string' ? body.id : ''
       if (id === '') {
         sendJson(res, 400, { ok: false, error: 'id 必填' })
@@ -275,14 +302,19 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
       sendJson(res, 200, { ok: true, devices: store.list().map(redact) })
     }) }))
 
-    // 卸载：路由全部注销 + 网关关闭
+    // 卸载：路由全部注销 + 网关关闭。
+    // 先置 disposed 挡住后续启动，再经同一条重启链关闭网关——保证与
+    // in-flight 的 startGateway 串行，不会留下孤儿监听
     web.effect(() => () => {
+      disposed = true
       for (const dispose of disposers) dispose()
-      if (gateway !== undefined) {
-        const old = gateway
-        gateway = undefined
-        void old.close().catch(() => {})
-      }
+      void restarting.catch(() => {}).then(async () => {
+        if (gateway !== undefined) {
+          const old = gateway
+          gateway = undefined
+          await old.close()
+        }
+      })
     })
 
     // webServer 就绪（含热插拔出现）：按当前配置拉起网关
