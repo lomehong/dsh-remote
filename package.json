@@ -1,6 +1,6 @@
 {
   "name": "@dsh-extra/dsh-remote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "dsh 远程访问插件：带配对认证的网关端口，把 LAN/Tailscale 上的请求安全反代到本地 dsh",
   "type": "module",
   "main": "lib/index.js",

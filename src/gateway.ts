@@ -133,6 +133,25 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       deny(res, 405, 'method not allowed')
       return
     }
+    // 桌面壳等原生客户端已持 token（POST 配对所得）：GET ?token= 等价“种浏览器 cookie”，
+    // 不新建设备、仅 touch；无效 token 走与错误码相同的 403 分支（计入限速）
+    const tokenParam = url.searchParams.get('token')
+    if (!wantsJson && tokenParam !== null && tokenParam !== '') {
+      const known = store.verify(tokenParam)
+      if (known === undefined) {
+        log(`配对失败（token 无效）来自 ${clientKey(req)}`)
+        deny(res, 403, '凭证无效或已被吊销：请在 dsh 设置页重新生成配对链接。')
+        return
+      }
+      store.touch(known.id, now())
+      res.writeHead(303, {
+        location: '/',
+        'set-cookie': `${REMOTE_COOKIE}=${tokenParam}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
+        'cache-control': 'no-store',
+      })
+      res.end()
+      return
+    }
     if (!pairings.consume(code)) {
       log(`配对失败（码无效或已过期）来自 ${clientKey(req)}`)
       if (wantsJson) {

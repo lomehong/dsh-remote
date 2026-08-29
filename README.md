@@ -79,6 +79,10 @@ POST /__remote/pair        body: {"code": "<一次性配对码>"}
 
 `GET /__remote/pair?code=...` 是浏览器流（303 + cookie），桌面用 POST JSON 流。
 
+已持 token 的桌面壳（如 webview 无 cookie 场景）可用
+`GET /__remote/pair?token=<设备令牌>` 为浏览器种 cookie：303 + Set-Cookie 同值，
+不新建设备、仅 touch 原设备；无效 token → 403（与错误码同分支，计入配对限速）。
+
 ## 已知边界
 
 - **配对设备 = 完全主人权限**：dsh 本身没有用户体系，网关认证只做「进不进来」，
@@ -100,7 +104,7 @@ POST /__remote/pair        body: {"code": "<一次性配对码>"}
 git clone https://github.com/lomehong/dsh-remote.git
 cd dsh-remote
 npm install
-npm test            # vitest：40 个行为锁定测试（直接跑 src/*.ts 源码）
+npm test            # vitest：41 个行为锁定测试（直接跑 src/*.ts 源码）
 npm run typecheck   # tsc 严格类型检查（宿主端 + 客户端）
 npm run build       # tsc 编译 src/ → lib/ + esbuild 重建 lib/client.js
 ```

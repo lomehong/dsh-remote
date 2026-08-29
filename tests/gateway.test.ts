@@ -127,6 +127,29 @@ describe('startGateway 认证与配对', () => {
     expect(await echo.text()).toBe('dsh says: /api/echo')
   })
 
+  it('GET /__remote/pair?token=<已有设备令牌> → 303 + Set-Cookie 同值，不新建设备', async () => {
+    const pairings = new FixedPairingStore(CODE)
+    const store = await freshStore()
+    const gw = await startTestGateway(store, pairings)
+    const base = `http://127.0.0.1:${gw.port}`
+    // 先 POST 配对得到合法 token 与设备
+    const { token, deviceId } = await pairViaPost(gw, pairings)
+    const before = store.list().length
+
+    const res = await fetch(`${base}/__remote/pair?token=${encodeURIComponent(token)}`, { redirect: 'manual' })
+    expect(res.status).toBe(303)
+    const cookie = res.headers.getSetCookie().find((c) => c.startsWith(`${REMOTE_COOKIE}=`))
+    expect(cookie).toBeDefined()
+    expect(cookie).toContain(`${REMOTE_COOKIE}=${token}`)
+    expect(cookie).toContain('HttpOnly')
+    expect(store.list().length).toBe(before) // 不新建
+    expect(store.verify(token)?.id).toBe(deviceId) // touch 原设备
+
+    // 无效 token → 403（与错误码同一失败分支）
+    const bad = await fetch(`${base}/__remote/pair?token=${encodeURIComponent('nope')}`, { redirect: 'manual' })
+    expect(bad.status).toBe(403)
+  })
+
   it('错误码 → 403 文本；桌面流 POST JSON → 200 {ok,token}，token 经 x-remote-token 生效', async () => {
     const pairings = new FixedPairingStore(CODE)
     const gw = await startTestGateway(await freshStore(), pairings)
