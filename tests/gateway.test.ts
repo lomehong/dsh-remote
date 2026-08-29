@@ -127,15 +127,29 @@ describe('startGateway 认证与配对', () => {
     expect(await echo.text()).toBe('dsh says: /api/echo')
   })
 
-  it('GET /__remote/pair?token=<已有设备令牌> → 303 + Set-Cookie 同值，不新建设备', async () => {
+  it('GET /__remote/pair?token=<已有设备令牌> → 303 + Set-Cookie 同值，不新建设备，touch 原设备（lastSeenAt 前进）', async () => {
     const pairings = new FixedPairingStore(CODE)
     const store = await freshStore()
-    const gw = await startTestGateway(store, pairings)
-    const base = `http://127.0.0.1:${gw.port}`
-    // 先 POST 配对得到合法 token 与设备
-    const { token, deviceId } = await pairViaPost(gw, pairings)
+    // 注入可控时钟：touch 仅在 now > lastSeenAt 时生效，真实毫秒级时钟有同毫秒空转的
+    // 理论抖动，用假时钟把「确实推进」钉死为确定断言
+    let clock = 1_000_000
+    const handle = await startGateway({
+      bind: '127.0.0.1',
+      port: 0,
+      upstream: { host: '127.0.0.1', port: upstreamPort },
+      store,
+      pairings,
+      log: () => {},
+      now: () => clock,
+    })
+    gateways.push(handle)
+    const base = `http://127.0.0.1:${handle.port}`
+    // 先 POST 配对得到合法 token 与设备（add 于 clock=1_000_000）
+    const { token, deviceId } = await pairViaPost(handle, pairings)
     const before = store.list().length
+    const seenBefore = store.verify(token)?.lastSeenAt
 
+    clock = 2_000_000 // 前进假时钟，保证 touch 生效
     const res = await fetch(`${base}/__remote/pair?token=${encodeURIComponent(token)}`, { redirect: 'manual' })
     expect(res.status).toBe(303)
     const cookie = res.headers.getSetCookie().find((c) => c.startsWith(`${REMOTE_COOKIE}=`))
@@ -143,7 +157,9 @@ describe('startGateway 认证与配对', () => {
     expect(cookie).toContain(`${REMOTE_COOKIE}=${token}`)
     expect(cookie).toContain('HttpOnly')
     expect(store.list().length).toBe(before) // 不新建
-    expect(store.verify(token)?.id).toBe(deviceId) // touch 原设备
+    expect(store.verify(token)?.id).toBe(deviceId) // touch 的是原设备
+    expect(seenBefore).toBe(1_000_000)
+    expect(store.verify(token)?.lastSeenAt).toBe(2_000_000) // touch 确实推进
 
     // 无效 token → 403（与错误码同一失败分支）
     const bad = await fetch(`${base}/__remote/pair?token=${encodeURIComponent('nope')}`, { redirect: 'manual' })
