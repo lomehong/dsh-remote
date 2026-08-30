@@ -1,10 +1,12 @@
 /**
- * 「远程访问」设置页：三段式——状态与配置镜像、配对、设备管理。
+ * 「远程访问」设置页：四段式——状态与配置镜像、配对、设备管理、软件更新。
  * - 状态/配置控件是只读镜像 + 修改引导：配置保存走宿主设置页通用机制
  *   （installSettingsSection 注册的 remote: 节），此处不臆造宿主写 API
  * - 5 秒轮询 /dsh-remote/api/status 展示监听状态/访问地址/最近事件
  * - 配对：生成一次性配对链接（按局域网/Tailscale 分类），复制到目标设备打开
  * - 设备：重命名（prompt）/ 吊销（confirm），操作后立即刷新
+ * - 更新：检查 GitHub 最新标签；GitHub 不可达只提示检查失败，页面其余不受影响；
+ *   应用后端后台执行（单飞），此处轮询 check 端点直至结束并提示重启生效
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ChangeEvent } from 'react'
 import type { RemoteKey } from './locales.ts'
@@ -35,6 +37,18 @@ interface StatusDto {
   addresses: AddressInfoDto[]
   devices: DeviceDto[]
   log: string[]
+}
+
+/** GET /dsh-remote/api/update/check 响应（GitHub 不可达时 latest 为 null 且带 checkError） */
+interface UpdateCheckDto {
+  ok: boolean
+  current: string
+  latest: string | null
+  updateAvailable: boolean
+  pendingVersion: string | null
+  applying: boolean
+  lastError: string
+  checkError?: string
 }
 
 interface AddressLink {
@@ -199,6 +213,83 @@ export function RemoteTab({ t }: RemoteTabInjected): React.ReactElement {
     }
   }, [refresh, t])
 
+  // ── 软件更新：检查（GitHub 失败仅提示，不影响页面其余部分）+ 一键应用（后台单飞，轮询进度） ──
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckDto | null>(null)
+  const [checkBusy, setCheckBusy] = useState(false)
+  const [applyBusy, setApplyBusy] = useState(false)
+  const [applyError, setApplyError] = useState('')
+
+  const runCheck = useCallback(async () => {
+    setCheckBusy(true)
+    setApplyError('')
+    try {
+      setUpdateInfo(await api<UpdateCheckDto>('/dsh-remote/api/update/check'))
+    } catch (err) {
+      // check 端点本身不可达（服务异常等）：页面其余部分不受影响
+      setUpdateInfo(null)
+      setApplyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCheckBusy(false)
+    }
+  }, [])
+
+  const runApply = useCallback(async (tag: string) => {
+    setApplyBusy(true)
+    setApplyError('')
+    try {
+      await api('/dsh-remote/api/update/apply', { body: { tag } })
+      // 后台任务：轮询 check 直至 applying 结束（服务端下载 60s 硬上限，这里放宽到 120s）
+      const deadline = Date.now() + 120_000
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500))
+        const st = await api<UpdateCheckDto>('/dsh-remote/api/update/check')
+        setUpdateInfo(st)
+        if (!st.applying) {
+          if (st.lastError !== '') setApplyError(st.lastError)
+          break
+        }
+        if (Date.now() > deadline) {
+          setApplyError(t('applyTimeout'))
+          break
+        }
+      }
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setApplyBusy(false)
+    }
+  }, [t])
+
+  const updateSection = (() => {
+    if (updateInfo === null) return null
+    if (updateInfo.checkError !== undefined && updateInfo.checkError !== '') {
+      return (
+        <p style={{ ...s.hint, color: c.danger }}>
+          {t('checkFailed')}：{updateInfo.checkError}
+        </p>
+      )
+    }
+    // 已应用待重启：提示置顶（优先于最新版本判断）
+    if (updateInfo.pendingVersion !== null) {
+      return <p style={{ ...s.hint, color: c.success }}>{t('appliedPending')}（{updateInfo.pendingVersion}）</p>
+    }
+    if (updateInfo.updateAvailable && updateInfo.latest !== null) {
+      return (
+        <div style={s.row}>
+          <span style={s.badge}>{t('latestVersion')}: {updateInfo.latest}</span>
+          <button
+            style={s.primaryButton}
+            disabled={applyBusy || updateInfo.applying}
+            onClick={() => { void runApply(updateInfo.latest!) }}
+          >
+            {applyBusy || updateInfo.applying ? t('applying') : `${t('updateTo')} ${updateInfo.latest}`}
+          </button>
+        </div>
+      )
+    }
+    return <p style={s.hint}>{t('upToDate')}</p>
+  })()
+
   const listening = status?.listening ?? false
 
   return (
@@ -294,6 +385,20 @@ export function RemoteTab({ t }: RemoteTabInjected): React.ReactElement {
         ) : (
           <pre style={s.log}>{status.log.join('\n')}</pre>
         )}
+      </div>
+
+      {/* 段四：软件更新（自更新：GitHub 标签 → 覆盖 lib + package.json，重启生效） */}
+      <div style={s.section}>
+        <h4 style={s.sectionTitle}>{t('update')}</h4>
+        <div style={s.row}>
+          <span style={s.badge}>{t('currentVersion')}: {updateInfo?.current ?? '—'}</span>
+          <button style={s.button} disabled={checkBusy || applyBusy} onClick={() => { void runCheck() }}>
+            {checkBusy ? t('checking') : t('checkUpdate')}
+          </button>
+        </div>
+        {updateSection}
+        {applyError !== '' && <p style={{ ...s.hint, color: c.danger }}>{applyError}</p>}
+        <p style={s.hint}>{t('updateHint')}</p>
       </div>
     </div>
   )

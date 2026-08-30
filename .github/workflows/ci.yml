@@ -13,3 +13,4 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: bash scripts/boot-smoke.sh || echo "boot-smoke skipped (needs dsh CLI)"

@@ -104,14 +104,17 @@ POST /__remote/pair        body: {"code": "<一次性配对码>"}
 git clone https://github.com/lomehong/dsh-remote.git
 cd dsh-remote
 npm install
-npm test            # vitest：41 个行为锁定测试（直接跑 src/*.ts 源码）
+npm test            # vitest：64 个行为锁定测试（直接跑 src/*.ts 源码）
 npm run typecheck   # tsc 严格类型检查（宿主端 + 客户端）
 npm run build       # tsc 编译 src/ → lib/ + esbuild 重建 lib/client.js
+bash scripts/boot-smoke.sh  # 启动冒烟（需 PATH 上有 dsh，缺失则跳过）
 ```
 
 - 宿主端源码是 TypeScript，`lib/*.js` 是 tsc 构建产物，类型声明在 `lib/types/`；
   客户端 bundle 用 esbuild 输出 `lib/client.js`。
 - `lib/` 随仓库提交（git 安装无需本地构建）。
+- 发布纪律：**tag = release**。设置页「软件更新」以 GitHub 标签 tarball 为源，
+  仅覆盖 `lib/**` 与 `package.json`（详见 `src/update.ts` 与 CHANGELOG）。
 
 ## 许可
 
