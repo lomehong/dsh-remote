@@ -3,6 +3,20 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.1.3] — 2026-08-29
+
+### 修复
+
+- 自更新换装回滚覆盖 package.json：旧元数据与旧 lib 一并移入备份目录 `lib.bak-<ts>`，
+  换装后段失败（如 `.update-pending` 写入失败）时两者都还原。此前会留下
+  「新 package.json + 旧 lib」，semver 守卫随即挡住重试
+- `overlayEntries` 拒绝含反斜杠的条目路径：win32 把 `\` 当路径分隔符，
+  `lib\..\..\evil.js` 形态可逃逸暂存区
+
+### 变更
+
+- tags API 请求加 `?per_page=100`（GitHub 默认仅返回 30 条，标签积累后会漏最新版本）
+
 ## [0.1.2] — 2026-08-29
 
 ### 新增

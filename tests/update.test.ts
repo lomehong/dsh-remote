@@ -148,9 +148,11 @@ describe('overlayEntries（纯函数：只保留 package.json + lib/**，剥离�
     expect(overlayEntries(all).map((e) => e.name)).toEqual(['package.json', 'lib/index.js', 'lib/sub/b.js'])
   })
 
-  it('路径穿越（..）条目被拒绝', () => {
+  it('路径穿越（..）与反斜杠条目被拒绝（win32 join 会解析 \\，防逃逸暂存区）', () => {
     const evil: TarEntry[] = [
       { name: 'package/lib/../../../etc/passwd', data: buf('evil') },
+      { name: 'package/lib/..\\..\\evil.js', data: buf('evil') },
+      { name: 'package/lib\\evil.js', data: buf('evil') },
       { name: 'package/lib/ok.js', data: buf('ok') },
     ]
     expect(overlayEntries(evil).map((e) => e.name)).toEqual(['lib/ok.js'])
@@ -237,8 +239,9 @@ describe('换装（临时目录集成：swap + 备份 + 回滚 + 校验）', () 
       expect(existsSync(staging)).toBe(false)
       const backups = readdirSync(pkgDir).filter((n) => n.startsWith('lib.bak-'))
       expect(backups).toHaveLength(1)
-      // lib.bak-<ts> 即旧 lib 目录本身：旧内容位于其根部
-      expect(readFileSync(join(pkgDir, backups[0]!, 'index.js'), 'utf8')).toBe('// old')
+      // 备份目录收着旧 lib 与旧 package.json：回滚要靠它完整还原
+      expect(readFileSync(join(pkgDir, backups[0]!, 'lib', 'index.js'), 'utf8')).toBe('// old')
+      expect(JSON.parse(readFileSync(join(pkgDir, backups[0]!, 'package.json'), 'utf8')).version).toBe('0.1.1')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -260,19 +263,37 @@ describe('换装（临时目录集成：swap + 备份 + 回滚 + 校验）', () 
     }
   })
 
-  it('替换中途失败：抛「回滚」错误且旧 lib 完整恢复', () => {
+  it('换装后段失败（.update-pending 写入失败）：lib 与 package.json 都回滚到旧版', () => {
+    // 回归：旧实现只回滚 lib——新 package.json 落地后 .update-pending 写失败会留下
+    // 「新元数据 + 旧 lib」，semver 守卫随即挡住重试。现在元数据必须一并还原。
     const root = mkdtempSync(join(tmpdir(), 'dsh-remote-update-'))
     try {
       const pkgDir = makePkg(root, '0.1.1', '// orig')
-      const staging = makeStaging(pkgDir, '0.1.2')
-      // 让「覆盖 package.json」必然失败：目标位置是目录（rename 文件→已存在目录必败，Win/Linux 一致）
-      rmSync(join(pkgDir, 'package.json'))
-      mkdirSync(join(pkgDir, 'package.json'))
+      const staging = makeStaging(pkgDir, '0.1.3')
+      // 让「写 .update-pending」必然失败：同名位置是目录（POSIX EISDIR / Windows EPERM）
+      mkdirSync(join(pkgDir, '.update-pending'))
 
-      expect(() => swapInPlace(pkgDir, staging, '0.1.2')).toThrow(/回滚/)
+      expect(() => swapInPlace(pkgDir, staging, '0.1.3')).toThrow(/回滚/)
 
       expect(readFileSync(join(pkgDir, 'lib', 'index.js'), 'utf8')).toBe('// orig')
-      expect(existsSync(join(pkgDir, '.update-pending'))).toBe(false)
+      expect(JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version).toBe('0.1.1')
+      // 备份目录保留（内含旧 lib + 旧 package.json），供人工兜底
+      expect(readdirSync(pkgDir).filter((n) => n.startsWith('lib.bak-'))).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('旧 package.json 缺失（备份失败）：抛「回滚」错误且旧 lib 完整还原', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-remote-update-'))
+    try {
+      const pkgDir = makePkg(root, '0.1.1', '// orig')
+      rmSync(join(pkgDir, 'package.json'))
+      const staging = makeStaging(pkgDir, '0.1.3')
+
+      expect(() => swapInPlace(pkgDir, staging, '0.1.3')).toThrow(/回滚/)
+
+      expect(readFileSync(join(pkgDir, 'lib', 'index.js'), 'utf8')).toBe('// orig')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

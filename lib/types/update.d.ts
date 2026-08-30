@@ -20,7 +20,7 @@ export declare function extractTarGz(buf: Buffer): TarEntry[];
  * 覆盖范围裁剪：归档内只保留 package.json 与 lib/**，剥离归档根前缀（换装时写入 staging 根）。
  * 根目录名不固定——GitHub codeload 归档是 <repo>-<ref>/（如 dsh-remote-0.1.2/），
  * 此处取全体条目的公共首段作为根并剥离；首段不一致视为无法识别的归档（返回空，调用方报错中止）。
- * 含 '..' 的条目一律拒绝（防路径穿越）。
+ * 含 '..' 或反斜杠的条目一律拒绝（win32 把 \ 当分隔符，反斜杠路径可逃逸暂存区）。
  */
 export declare function overlayEntries(entries: TarEntry[]): TarEntry[];
 export interface InstallLayout {
@@ -70,9 +70,11 @@ export declare function updateStatus(): UpdateStatus;
 /** staging 校验：package.json 版本 === 目标版本，且 lib/index.js 在位（换装前的最后防线） */
 export declare function verifyStaging(stagingDir: string, expectedVersion: string): void;
 /**
- * 换装：lib → lib.bak-<ts>（此前清掉更早备份，恰留 1 份）→ staging lib 顶上 →
- * 覆盖 package.json → 写 .update-pending。开始后任一步失败都尽力回滚并抛中文错误；
- * 全部成功才清理 staging。
+ * 换装：旧 lib 与旧 package.json 一并移入备份目录 lib.bak-<ts>（此前清掉更早备份，
+ * 恰留 1 份）→ staging 的 lib 与 package.json 顶上 → 写 .update-pending。
+ * 开始后任一步失败都尽力回滚：移除半就位的新内容，把备份目录里的旧 lib 与旧
+ * package.json 原样还原——元数据不同滚会让 semver 守卫挡住重试（新版本号 + 旧 lib）。
+ * 回滚也失败的极端情况保留备份目录供手工恢复；全部成功才清理 staging。
  */
 export declare function swapInPlace(pkgDir: string, stagingDir: string, expectedVersion: string): void;
 /**
