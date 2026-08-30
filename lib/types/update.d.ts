@@ -17,8 +17,10 @@ export declare function tarExtractEntries(buf: Buffer): TarEntry[];
 /** gzip 解包 + tar 解析（apply 的真实入口） */
 export declare function extractTarGz(buf: Buffer): TarEntry[];
 /**
- * 覆盖范围裁剪：只保留 package/package.json 与 package/lib/**，
- * 剥离 'package/' 前缀（换装时写入 staging 根）；含 '..' 的条目一律拒绝（防路径穿越）。
+ * 覆盖范围裁剪：归档内只保留 package.json 与 lib/**，剥离归档根前缀（换装时写入 staging 根）。
+ * 根目录名不固定——GitHub codeload 归档是 <repo>-<ref>/（如 dsh-remote-0.1.2/），
+ * 此处取全体条目的公共首段作为根并剥离；首段不一致视为无法识别的归档（返回空，调用方报错中止）。
+ * 含 '..' 的条目一律拒绝（防路径穿越）。
  */
 export declare function overlayEntries(entries: TarEntry[]): TarEntry[];
 export interface InstallLayout {

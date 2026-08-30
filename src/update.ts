@@ -118,18 +118,31 @@ export function extractTarGz(buf: Buffer): TarEntry[] {
 }
 
 /**
- * 覆盖范围裁剪：只保留 package/package.json 与 package/lib/**，
- * 剥离 'package/' 前缀（换装时写入 staging 根）；含 '..' 的条目一律拒绝（防路径穿越）。
+ * 覆盖范围裁剪：归档内只保留 package.json 与 lib/**，剥离归档根前缀（换装时写入 staging 根）。
+ * 根目录名不固定——GitHub codeload 归档是 <repo>-<ref>/（如 dsh-remote-0.1.2/），
+ * 此处取全体条目的公共首段作为根并剥离；首段不一致视为无法识别的归档（返回空，调用方报错中止）。
+ * 含 '..' 的条目一律拒绝（防路径穿越）。
  */
 export function overlayEntries(entries: TarEntry[]): TarEntry[] {
+  let root: string | null = null
+  for (const e of entries) {
+    const i = e.name.indexOf('/')
+    if (i === -1) continue // 根目录外的散文件不参与根推断
+    const seg = e.name.slice(0, i)
+    if (root === null) root = seg
+    else if (seg !== root) return [] // 多根：无法安全剥离前缀，宁可中止
+  }
+  if (root === null) return []
+  const prefix = `${root}/`
   const out: TarEntry[] = []
   for (const e of entries) {
-    if (e.name === 'package/package.json') {
+    if (!e.name.startsWith(prefix)) continue
+    const rel = e.name.slice(prefix.length)
+    if (rel === 'package.json') {
       out.push({ name: 'package.json', data: e.data })
       continue
     }
-    if (e.name.startsWith('package/lib/')) {
-      const rel = e.name.slice('package/'.length)
+    if (rel.startsWith('lib/')) {
       if (rel.split('/').includes('..')) continue // 路径穿越：拒绝
       out.push({ name: rel, data: e.data })
     }
@@ -404,7 +417,7 @@ export async function applyUpdate(tag: string, log?: (line: string) => void): Pr
 
     status.phase = '解压'
     const files = overlayEntries(extractTarGz(tgz))
-    if (files.length === 0) throw new Error('归档中没有可应用的文件（缺 package/lib 或 package/package.json）')
+    if (files.length === 0) throw new Error('归档中没有可应用的文件（缺 lib/** 或 package.json）')
     for (const file of files) {
       const dest = join(staging, file.name)
       mkdirSync(dirname(dest), { recursive: true })

@@ -134,7 +134,7 @@ describe('tar 解析（纯函数，测试内构造真实 tar 字节）', () => {
   })
 })
 
-describe('overlayEntries（纯函数：只保留 package.json + lib/**，剥离 package/ 前缀）', () => {
+describe('overlayEntries（纯函数：只保留 package.json + lib/**，剥离归档根前缀）', () => {
   const all: TarEntry[] = [
     { name: 'package/package.json', data: buf('{}') },
     { name: 'package/lib/index.js', data: buf('a') },
@@ -154,6 +154,24 @@ describe('overlayEntries（纯函数：只保留 package.json + lib/**，剥离 
       { name: 'package/lib/ok.js', data: buf('ok') },
     ]
     expect(overlayEntries(evil).map((e) => e.name)).toEqual(['lib/ok.js'])
+  })
+
+  it('归档根目录不叫 package/ 时同样识别（codeload 实际为 <repo>-<ref>/）', () => {
+    const all: TarEntry[] = [
+      { name: 'dsh-remote-0.1.2/package.json', data: buf('{}') },
+      { name: 'dsh-remote-0.1.2/lib/index.js', data: buf('a') },
+      { name: 'dsh-remote-0.1.2/src/index.ts', data: buf('skip') },
+    ]
+    expect(overlayEntries(all).map((e) => e.name)).toEqual(['package.json', 'lib/index.js'])
+  })
+
+  it('多根/无法识别的归档 → 空输出（调用方报错中止）', () => {
+    const mixed: TarEntry[] = [
+      { name: 'a/package.json', data: buf('{}') },
+      { name: 'b/lib/index.js', data: buf('x') },
+    ]
+    expect(overlayEntries(mixed)).toEqual([])
+    expect(overlayEntries([{ name: 'loose-file.js', data: buf('x') }])).toEqual([])
   })
 
   it('空输入 → 空输出', () => {
