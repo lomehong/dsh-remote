@@ -7,11 +7,6 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-vi.mock('@deepseek-ai/dsh-settings', () => ({
-  installSettingsSection: vi.fn(),
-  settingsNamespace: (ns: string) => ns,
-}))
-
 // updater 整体 mock：端点装配层测试不触网、不动文件系统
 vi.mock('../src/update.ts', () => ({
   clearPendingMarker: vi.fn(),

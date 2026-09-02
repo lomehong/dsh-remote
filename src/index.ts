@@ -13,7 +13,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+// 纯类型导入：载入 @deepseek-ai/dsh-settings 对 Context 的 `.settings` 增补
+// （alpha.2 起 settingsNamespace()/installSettingsSection() 已移除，须经此取服务）。
+import type {} from '@deepseek-ai/dsh-settings'
 import { normalizeConfigInput, type RemoteConfig } from './config.ts'
 import { PairingStore } from './tokens.ts'
 import { loadDevices, type DeviceRecord } from './devices.ts'
@@ -30,7 +32,10 @@ export const Config = z.object({
   bind: z.string().default('0.0.0.0').description('绑定地址（可改为 Tailscale IP 等单接口地址）'),
 })
 
-const NS = settingsNamespace('remote')
+// alpha.2 起模块级 settingsNamespace()/installSettingsSection() 移除：命名空间用裸
+// 字符串（类型层 SettingsNamespaceInput 校验），经 inject(['settings']) 取提供方再
+// 调 SettingsProvider.installSection()。
+const NS = 'remote'
 
 /** 测试可覆盖的 DSH home：优先专用环境变量，其次宿主 DSH_HOME，兜底 ~/.dsh（对齐 model-failover）。 */
 export function dshHome(): string {
@@ -173,18 +178,22 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
   }
 
   // ── 配置来源：settings 节（热重载），组合层 config 为基线 ──
+  // alpha.2 起模块级 installSettingsSection() 移除：经 inject(['settings']) 取提供方，
+  // 调用 SettingsProvider.installSection()（hooks 形状不变，参考 dsh-yuyi 的迁移）。
   let readConfig: () => RemoteConfig = () => config
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source: () => RemoteConfig) => { readConfig = source },
-    onChange: () => {
-      void (async () => {
-        Object.assign(rt, normalizeConfigInput(readConfig()))
-        await restartGateway()
-        record(`配置已应用：${rt.enabled ? `启用（${rt.bind}:${rt.port}）` : '停用'}`)
-      })().catch((error) => {
-        record(`配置变更应用失败：${error instanceof Error ? error.message : String(error)}`)
-      })
-    },
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, NS, Config, config, {
+      setSource: (source: () => RemoteConfig) => { readConfig = source },
+      onChange: () => {
+        void (async () => {
+          Object.assign(rt, normalizeConfigInput(readConfig()))
+          await restartGateway()
+          record(`配置已应用：${rt.enabled ? `启用（${rt.bind}:${rt.port}）` : '停用'}`)
+        })().catch((error) => {
+          record(`配置变更应用失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+      },
+    })
   })
 
   // ── 本地管理 API（webServer 在位时；供设置页「远程访问」Tab 使用） ──

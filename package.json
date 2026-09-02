@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.2-alpha.3",
     "@deepseek-ai/schemastery": ">=0.1.0",
     "@types/node": "^20.0.0",
     "@types/react": "~18.3.1",

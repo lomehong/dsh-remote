@@ -9,14 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 
-vi.mock('@deepseek-ai/dsh-settings', () => ({
-  installSettingsSection: vi.fn(),
-  settingsNamespace: (ns: string) => ns,
-}))
-
 import { apply } from '../src/index.ts'
 import { REMOTE_COOKIE } from '../src/gateway.ts'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 
 type RouteHandler = (req: {
   method?: string
@@ -32,6 +26,9 @@ function makeHarness(upstreamPort: number) {
   const routes: Record<string, RouteHandler> = {}
   const logs: string[] = []
   const injectFns: Array<(scoped: any) => void> = []
+  // alpha.2 起模块级 installSettingsSection() 移除：apply 经 inject(['settings']) 调
+  // SettingsProvider.installSection()，这里 mock 该提供方以捕获 hooks。
+  const installSection = vi.fn()
   const webServer = {
     host: '127.0.0.1',
     port: upstreamPort,
@@ -54,6 +51,9 @@ function makeHarness(upstreamPort: number) {
       if (names.includes('webServer')) {
         injectFns.push(fn)
         fn({ webServer, effect: (factory: () => () => void) => { disposers.push(factory()) } })
+      }
+      if (names.includes('settings')) {
+        fn({ settings: { installSection } })
       }
     },
     effect: (factory: () => () => void) => { disposers.push(factory()) },
@@ -85,7 +85,7 @@ function makeHarness(upstreamPort: number) {
     fn({ webServer, effect: (factory: () => () => void) => { disposers.push(factory()) } })
   }
   const dispose = (): void => { for (const d of disposers) d() }
-  return { ctx, logs, routes, call, dispose, reinject }
+  return { ctx, logs, routes, call, dispose, reinject, installSection }
 }
 
 /** 轮询直至条件成立（网关启停是异步的）。 */
@@ -97,9 +97,9 @@ async function waitFor(desc: string, check: () => boolean, timeoutMs = 3000): Pr
   }
 }
 
-/** settings hooks 从 mock 中取出（apply 必经 installSettingsSection）。 */
-function settingsHooks(): { setSource: (source: () => unknown) => void; onChange: () => void } {
-  const calls = vi.mocked(installSettingsSection).mock.calls
+/** settings hooks 从 installSection mock 中取出（apply 经 inject(['settings']) 调用）。 */
+function settingsHooks(h: ReturnType<typeof makeHarness>): { setSource: (source: () => unknown) => void; onChange: () => void } {
+  const calls = h.installSection.mock.calls
   expect(calls.length).toBeGreaterThan(0)
   expect(calls.at(-1)![1]).toBe('remote')
   return calls.at(-1)![4] as any
@@ -202,7 +202,7 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
     await apply(h.ctx as any, { enabled: true, port: 0, bind: '127.0.0.1' })
     await waitFor('gateway up', () => h.logs.length > 0)
 
-    const hooks = settingsHooks()
+    const hooks = settingsHooks(h)
     hooks.setSource(() => ({ enabled: false, port: 0, bind: '127.0.0.1' }))
     hooks.onChange()
 
@@ -223,7 +223,7 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
 
     const h = makeHarness(upstreamPort)
     await apply(h.ctx as any, { enabled: false, port: 0, bind: '127.0.0.1' })
-    const hooks = settingsHooks()
+    const hooks = settingsHooks(h)
 
     // 先卸载（scoped effect 清理：置 disposed + 注销路由），再来的配置变更必须被挡住
     h.dispose()
@@ -246,7 +246,7 @@ describe('装配层（apply 全流程，mock 宿主）', () => {
     // 现闩按作用域隔离：卸载旧作用域 → 重注入 → 配置启用 → 网关应重新拉起。
     const h = makeHarness(upstreamPort)
     await apply(h.ctx as any, { enabled: false, port: 0, bind: '127.0.0.1' })
-    const hooks = settingsHooks()
+    const hooks = settingsHooks(h)
 
     // 旧作用域卸载 → webServer 重新在位（cordis 重注入）
     h.dispose()
