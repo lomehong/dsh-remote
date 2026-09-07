@@ -3,6 +3,14 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.1] — 2026-09-04
+
+### 修复
+
+- 网关状态文件滞留态：事件驱动发布（restart/dispose 链）之外增加 30s 自愈对账——
+  装配期 inject 回调与 apply 末尾的竞态、热重载次序反转等时序窗口不再导致
+  「网关监听中但 gateway-state.json 停在 enabled:false」（omp 真机部署实测发现）
+
 ## [0.2.0] — 2026-09-04
 
 ### 新增
