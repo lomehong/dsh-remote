@@ -24,7 +24,7 @@ import { PairingStore } from './tokens.ts'
 import { loadDevices, type DeviceRecord } from './devices.ts'
 import { listAddresses, type AddressInfo } from './addresses.ts'
 import { startGateway, type GatewayHandle } from './gateway.ts'
-import { advertisedAddress, writeGatewayState } from './state.ts'
+import { advertisedAddress, gatewayStatePath, writeGatewayState } from './state.ts'
 import { verifySsoJwt } from './sso.ts'
 import type { Upstream } from './proxy.ts'
 import * as updater from './update.ts'
@@ -154,6 +154,8 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
   // 启动失败标记：本实例未持有监听器时（如双加载下另一实例已占用端口），
   // 无权把状态文件写成 enabled:false（omp 真机实测：双实例 flap 互相覆盖）。
   let lastStartFailed = false
+  // 发布去重记录：状态变化才记日志（30s 对账不刷屏），排障时可直接看到谁在写什么
+  let lastPublished = ''
 
   /**
    * 状态暴露（instance-address-report 契约 §1）：按当前网关实况写 gateway-state.json，
@@ -162,16 +164,26 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
    */
   const publishState = (): void => {
     try {
+      let payload: string | undefined
       if (gateway !== undefined) {
         const address = advertisedAddress(rt.bind, gateway.port)
-        writeGatewayState(dshHome(), {
+        const state = {
           enabled: true,
           startedAt: gatewayStartedAt,
           ...(address !== undefined ? { address } : {}),
-        })
+        }
+        writeGatewayState(dshHome(), state)
+        payload = JSON.stringify(state)
       } else if (!lastStartFailed) {
         // 仅在「本应无网关」时写停用；启动失败的实例不持有监听器，保持沉默
         writeGatewayState(dshHome(), { enabled: false })
+        payload = '{"enabled":false}'
+      } else {
+        payload = '(沉默：本实例未持有监听器)'
+      }
+      if (payload !== lastPublished) {
+        lastPublished = payload
+        record(`网关状态已发布：${payload} → ${gatewayStatePath(dshHome())}`)
       }
     } catch (error) {
       record(`网关状态文件写入失败：${error instanceof Error ? error.message : String(error)}`)
