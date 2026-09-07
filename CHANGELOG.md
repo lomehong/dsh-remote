@@ -3,6 +3,16 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.4] — 2026-09-04
+
+### 修复
+
+- exchange 验签自报设备名改御驿登记名：os.hostname() 与御符 ai_agents.hostname
+  （御驿 Hub 心跳的 device 登记名）可能不同（实测 clawith-test 机器 OS 主机名
+  为 clawith-73294942s4jbu），此前 sso-verify 必然 403。解析顺序与 dsh-yuyi 同源：
+  remote.deviceName 配置 → YUYI_DEVICE 环境变量 → ~/.yuyi/env 的 YUYI_DEVICE →
+  OS 主机名兜底
+
 ## [0.2.3] — 2026-09-04
 
 ### 新增

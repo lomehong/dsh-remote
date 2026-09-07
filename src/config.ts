@@ -5,6 +5,8 @@ export interface RemoteConfig {
   bind: string
   /** 御符 sso-verify 内省端点（exchange 登录即连用；形态 B 契约）。 */
   ssoVerify: string
+  /** sso-verify 自报设备名（御驿 device 登记名）；缺省自动解析（YUYI_DEVICE env → ~/.yuyi/env → OS 主机名）。 */
+  deviceName?: string
 }
 
 export const REMOTE_DEFAULTS: RemoteConfig = {
@@ -24,5 +26,6 @@ export function normalizeConfigInput(payload: unknown): RemoteConfig {
   if (port < 0 || port > 65_535) throw new Error(`port 越界（0-65535）：${raw.port}`)
   const bind = String(raw.bind ?? REMOTE_DEFAULTS.bind).trim() || REMOTE_DEFAULTS.bind
   const ssoVerify = String(raw.ssoVerify ?? REMOTE_DEFAULTS.ssoVerify).trim() || REMOTE_DEFAULTS.ssoVerify
-  return { enabled: raw.enabled === true, port, bind, ssoVerify }
+  const deviceName = typeof raw.deviceName === 'string' && raw.deviceName.trim() !== '' ? raw.deviceName.trim() : undefined
+  return { enabled: raw.enabled === true, port, bind, ssoVerify, ...(deviceName !== undefined ? { deviceName } : {}) }
 }

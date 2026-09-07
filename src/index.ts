@@ -12,7 +12,7 @@
  *   符号链接安装拒绝，暂存校验 + 备份回滚，重启 DSH 后生效）
  * - 配置：settings.yaml 的 remote: 节，热重载（enabled/port/bind 变更即重建网关）
  */
-import { homedir, hostname } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -26,6 +26,7 @@ import { listAddresses, type AddressInfo } from './addresses.ts'
 import { startGateway, type GatewayHandle } from './gateway.ts'
 import { advertisedAddress, gatewayStatePath, writeGatewayState } from './state.ts'
 import { verifySsoJwt } from './sso.ts'
+import { resolveDeviceName } from './hostname.ts'
 import type { Upstream } from './proxy.ts'
 import * as updater from './update.ts'
 
@@ -36,6 +37,7 @@ export const Config = z.object({
   port: z.number().default(3090).description('网关监听端口'),
   bind: z.string().default('0.0.0.0').description('绑定地址（可改为 Tailscale IP 等单接口地址）'),
   ssoVerify: z.string().default(REMOTE_DEFAULTS.ssoVerify).description('御符 sso-verify 验签端点（SSO 登录即连）'),
+  deviceName: z.string().default('').description('sso-verify 自报设备名（御驿 device 登记名；留空自动解析 YUYI_DEVICE → ~/.yuyi/env → OS 主机名）'),
 })
 
 // alpha.2 起模块级 settingsNamespace()/installSettingsSection() 移除：命名空间用裸
@@ -218,7 +220,8 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
             store,
             pairings,
             // SSO 登录即连：验签走御符 sso-verify（形态 B：dsh-remote 不自持 jwtSecret/owner）
-            verifySso: (jwt) => verifySsoJwt(rt.ssoVerify, jwt, hostname()),
+            // 自报御驿 device 登记名（非 OS 主机名——sso-verify 按 ai_agents.hostname 匹配）
+            verifySso: (jwt) => verifySsoJwt(rt.ssoVerify, jwt, resolveDeviceName(rt.deviceName)),
             log: record,
           })
         } catch (error) {
