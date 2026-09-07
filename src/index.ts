@@ -285,10 +285,6 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
     const scope = { disposed: false }
     currentScope = scope
     upstream = { host: web.webServer.host ?? '127.0.0.1', port: web.webServer.port ?? 3080 }
-    // rc.1+ 宿主同 context 提供的 web 连接服务（launch token 持有者）——
-    // web-auth 桥用它把「设备凭证 + 上游 30 天会话」一次导航种齐。
-    // 旧版宿主无此服务 → webLaunchToken 返回 undefined → web-auth 退回 /。
-    webConnection = web.connection
     const disposers: Array<() => void> = []
 
     // 统一防逃逸包装：处理器任何异常/拒绝都拦在 handler 内转 500——
@@ -489,6 +485,15 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
 
     // webServer 就绪（含热插拔出现）：按当前配置拉起网关
     void restartGateway()
+  })
+
+  // ── rc.1+ web 认证桥的 token 来源：单独注入 connection 服务（与 dsh-web-app
+  // 同款姿势 ctx.inject(["connection"], …)——webServer 作用域里读不到它，实测踩坑）。
+  // 旧版宿主无此服务 → 本 inject 永不触发 → webConnection 保持 undefined，
+  // /__remote/web-auth 自动退化为直落 /（无害）。
+  ctx.inject(['connection'], (connectionCtx: unknown) => {
+    webConnection = (connectionCtx as { connection?: ConnectionLike }).connection
+    record(`已捕获宿主 connection 服务（web 认证桥${webConnection !== undefined ? '可用' : '字段缺失'}）`)
   })
 
   // 首次装配即按 config 状态拉起（webServer 缺席时 enabled 也无从反代，跳过）

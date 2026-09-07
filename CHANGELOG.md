@@ -3,6 +3,15 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.7] — 2026-09-07
+
+### 修复
+
+- web-auth 桥拿不到 launch token（真机：桌面连接落在上游 401 文本页）：connection
+  服务必须在**独立 inject(["connection""])** 中捕获——webServer 注入作用域只暴露
+  声明的服务（cordis 语义），此前在 webServer 作用域读 connection 恒为 undefined，
+  桥永远走退级分支。与 dsh-web-app 的 ctx.inject(["connection""], …) 同款姿势；
+  旧版宿主无此服务则该 inject 永不触发，退级行为不变。捕获/缺失均记日志。
 ## [0.2.6] — 2026-09-07
 
 ### 新增
@@ -117,3 +126,4 @@
 ### 新增
 
 - 首个版本：配对认证网关（HTTP+WS 反代、设备管理、限速、设置页、CI）
+
