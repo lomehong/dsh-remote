@@ -55,8 +55,15 @@ interface WebServerLike {
   port?: number
   register: (route: { kind: 'exact'; path: string; handler: (req: ReqLike, res: ResLike) => void | Promise<void> }) => () => void
 }
+/** rc.1+ 宿主在同一 context 上提供的 web 连接服务（launch token 持有者）。
+ * 字段缺失 = 旧版宿主（无 web 认证桥，web-auth 端点自动退化为直落 /）。 */
+interface ConnectionLike {
+  launchToken?: string
+  authenticatedUrl?: (baseUrl: string) => string
+}
 interface ScopedCtx {
   webServer: WebServerLike
+  connection?: ConnectionLike
   effect: (fn: () => () => void) => void
 }
 
@@ -152,6 +159,8 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
   let upstream: Upstream | undefined
   let gateway: GatewayHandle | undefined
   let gatewayStartedAt = 0
+  /** rc.1+ 宿主 web 连接服务（webServer 注入时捕获；launch token 持有者）。 */
+  let webConnection: ConnectionLike | undefined
 
   // 启动失败标记：本实例未持有监听器时（如双加载下另一实例已占用端口），
   // 无权把状态文件写成 enabled:false（omp 真机实测：双实例 flap 互相覆盖）。
@@ -222,6 +231,8 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
             // SSO 登录即连：验签走御符 sso-verify（形态 B：dsh-remote 不自持 jwtSecret/owner）
             // 自报御驿 device 登记名（非 OS 主机名——sso-verify 按 ai_agents.hostname 匹配）
             verifySso: (jwt) => verifySsoJwt(rt.ssoVerify, jwt, resolveDeviceName(rt.deviceName)),
+            // rc.1+ web 认证桥：/__remote/web-auth 302 到 /?token=<launchToken> 种上游会话
+            webLaunchToken: () => webConnection?.launchToken,
             log: record,
           })
         } catch (error) {
@@ -274,6 +285,10 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
     const scope = { disposed: false }
     currentScope = scope
     upstream = { host: web.webServer.host ?? '127.0.0.1', port: web.webServer.port ?? 3080 }
+    // rc.1+ 宿主同 context 提供的 web 连接服务（launch token 持有者）——
+    // web-auth 桥用它把「设备凭证 + 上游 30 天会话」一次导航种齐。
+    // 旧版宿主无此服务 → webLaunchToken 返回 undefined → web-auth 退回 /。
+    webConnection = web.connection
     const disposers: Array<() => void> = []
 
     // 统一防逃逸包装：处理器任何异常/拒绝都拦在 handler 内转 500——

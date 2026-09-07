@@ -62,13 +62,14 @@ async function freshStore(): Promise<DeviceStore> {
   return loadDevices(dir)
 }
 
-async function startTestGateway(store: DeviceStore, pairings: PairingStore): Promise<GatewayHandle> {
+async function startTestGateway(store: DeviceStore, pairings: PairingStore, webLaunchToken?: () => string | undefined): Promise<GatewayHandle> {
   const handle = await startGateway({
     bind: '127.0.0.1',
     port: 0,
     upstream: { host: '127.0.0.1', port: upstreamPort },
     store,
     pairings,
+    ...(webLaunchToken !== undefined ? { webLaunchToken } : {}),
     log: () => {},
   })
   gateways.push(handle)
@@ -115,7 +116,7 @@ describe('startGateway 认证与配对', () => {
     pairings.create() // 预置固定码
     const res = await fetch(`http://127.0.0.1:${gw.port}/__remote/pair?code=${encodeURIComponent(CODE)}`, { redirect: 'manual' })
     expect(res.status).toBe(303)
-    expect(res.headers.get('location')).toBe('/')
+    expect(res.headers.get('location')).toBe('/__remote/web-auth')
     const cookie = res.headers.getSetCookie().find((c) => c.startsWith(`${REMOTE_COOKIE}=`))
     expect(cookie).toBeDefined()
     expect(cookie).toContain('HttpOnly')
@@ -299,3 +300,41 @@ async function wsProbe(port: number, path: string, token?: string): Promise<{ st
     socket.on('close', () => { clearTimeout(guard); resolve({ status, echoed: false }) })
   })
 }
+
+describe('/__remote/web-auth（rc.1+ 上游 web 认证桥）', () => {
+  it('持设备凭证 → 302 /?token=<launchToken>', async () => {
+    let launched: string | undefined = 'web-launch-tok'
+    const store = await freshStore()
+    const pairings = new FixedPairingStore(CODE)
+    const gw = await startTestGateway(store, pairings, () => launched)
+    const { token } = await pairViaPost(gw, pairings)
+    const res = await fetch(`http://127.0.0.1:${gw.port}/__remote/web-auth`, {
+      headers: { 'x-remote-token': token },
+      redirect: 'manual',
+    })
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe(`/?token=${encodeURIComponent('web-launch-tok')}`)
+    // token 动态读取：宿主重启换 token 后，下一次 web-auth 带新值
+    launched = 'rotated-tok'
+    const res2 = await fetch(`http://127.0.0.1:${gw.port}/__remote/web-auth`, {
+      headers: { 'x-remote-token': token },
+      redirect: 'manual',
+    })
+    expect(res2.headers.get('location')).toBe('/?token=rotated-tok')
+  })
+
+  it('旧版宿主（无 launch token）→ 302 退回 /；未认证请求 401 到不了 web-auth', async () => {
+    const gw = await startTestGateway(await freshStore(), new PairingStore())
+    const anon = await fetch(`http://127.0.0.1:${gw.port}/__remote/web-auth`, { redirect: 'manual' })
+    expect(anon.status).toBe(401)
+    const pairings = new FixedPairingStore(CODE)
+    const gw2 = await startTestGateway(await freshStore(), pairings)
+    const { token } = await pairViaPost(gw2, pairings)
+    const ok = await fetch(`http://127.0.0.1:${gw2.port}/__remote/web-auth`, {
+      headers: { 'x-remote-token': token },
+      redirect: 'manual',
+    })
+    expect(ok.status).toBe(302)
+    expect(ok.headers.get('location')).toBe('/')
+  })
+})

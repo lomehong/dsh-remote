@@ -23,6 +23,9 @@ export interface GatewayOptions {
     pairings: PairingStore;
     /** SSO exchange 的验签函数（默认走御符 sso-verify；测试注入桩）。缺省 = exchange 端点 503。 */
     verifySso?: (jwt: string) => Promise<SsoVerifyResult>;
+    /** 上游 web 认证桥（rc.1+）：返回 dsh web 当前 launch token（无/旧版宿主 → undefined）。
+     * 供 /__remote/web-auth 把设备凭证与上游 30 天会话一次导航种齐。 */
+    webLaunchToken?: () => string | undefined;
     log: (line: string) => void;
     now?: () => number;
 }

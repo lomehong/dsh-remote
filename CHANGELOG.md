@@ -3,6 +3,18 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.6] — 2026-09-07
+
+### 新增
+
+- **上游 web 认证桥** `/__remote/web-auth`（rc.1+ 宿主）：持设备凭证访问 → 302 到
+  `/?token=<dsh web launchToken>` → 上游验 token 种 30 天会话 cookie → 落 / 直接可用。
+  一次导航种齐「设备凭证 + 上游会话」两把 cookie，桌面远程连接不再卡上游登录墙
+- pair 成功分支落点 `/` → `/__remote/web-auth`（相对路径，浏览器与桌面反代两种入口
+  都解析到正确 origin）；旧版宿主（无 connection 服务）web-auth 自动退回 /，无害
+- launch token 来源：宿主 rc.1+ 同 context 的 `connection` 服务（`launchToken` 字段），
+  经 `webLaunchToken` 注入网关；启动日志里的 token 从此无需人工搬运
+
 ## [0.2.5] — 2026-09-04
 
 ### 修复

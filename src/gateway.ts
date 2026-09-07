@@ -28,6 +28,9 @@ export interface GatewayOptions {
   pairings: PairingStore
   /** SSO exchange 的验签函数（默认走御符 sso-verify；测试注入桩）。缺省 = exchange 端点 503。 */
   verifySso?: (jwt: string) => Promise<SsoVerifyResult>
+  /** 上游 web 认证桥（rc.1+）：返回 dsh web 当前 launch token（无/旧版宿主 → undefined）。
+   * 供 /__remote/web-auth 把设备凭证与上游 30 天会话一次导航种齐。 */
+  webLaunchToken?: () => string | undefined
   log: (line: string) => void
   now?: () => number
 }
@@ -122,6 +125,17 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
         return
       }
       store.touch(device.id, now())
+      if (url.pathname === '/__remote/web-auth') {
+        // 上游 web 认证桥（rc.1+ 认证模型）：302 到 /?token=<launchToken>（相对路径，
+        // 浏览器与桌面反代两种入口都解析到正确 origin）→ 上游验 token 种 30 天会话
+        // cookie → 落 / 即可用。旧版宿主无 launch token → 退回 /（上游忽略未知 query，
+        // 无害）。本端点在设备凭证之后，未认证请求到不了这里。
+        const webToken = options.webLaunchToken?.()
+        const location = webToken !== undefined && webToken !== '' ? `/?token=${encodeURIComponent(webToken)}` : '/'
+        res.writeHead(302, { location, 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
       proxyRequest(upstream, req, res)
     } catch (error) {
       log(`网关请求处理异常：${error instanceof Error ? error.message : String(error)}`)
@@ -159,8 +173,10 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
         return
       }
       store.touch(known.id, now())
+      // 落点改为 web-auth 桥：一次导航种齐 设备 cookie + 上游 30 天会话 cookie
+      // （rc.1+ 上游有自己的 token→cookie 认证；旧版宿主 web-auth 退回 /，无害）
       res.writeHead(303, {
-        location: '/',
+        location: '/__remote/web-auth',
         'set-cookie': `${REMOTE_COOKIE}=${tokenParam}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
         'cache-control': 'no-store',
       })
@@ -190,7 +206,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       return
     }
     res.writeHead(303, {
-      location: '/',
+      location: '/__remote/web-auth',
       'set-cookie': `${REMOTE_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
       'cache-control': 'no-store',
     })
