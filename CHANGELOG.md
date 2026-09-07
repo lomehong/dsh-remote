@@ -3,6 +3,16 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.2] — 2026-09-04
+
+### 修复
+
+- 双加载下状态文件 flap：启动失败（如另一实例已占用端口 EADDRINUSE）的实例
+  不持有监听器，不再把 gateway-state.json 写成 enabled:false——状态文件只由
+  实际持有网关的实例发布（omp 真机实测：双 30s 对账定时器互相覆盖导致
+  address 上报时有时无）
+- 网关启动失败此前静默吞掉（无任何日志痕迹）：现记录「网关启动失败：原因」
+
 ## [0.2.1] — 2026-09-04
 
 ### 修复
