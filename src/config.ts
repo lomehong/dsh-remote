@@ -3,9 +3,16 @@ export interface RemoteConfig {
   enabled: boolean
   port: number
   bind: string
+  /** 御符 sso-verify 内省端点（exchange 登录即连用；形态 B 契约）。 */
+  ssoVerify: string
 }
 
-export const REMOTE_DEFAULTS: RemoteConfig = { enabled: false, port: 3090, bind: '0.0.0.0' }
+export const REMOTE_DEFAULTS: RemoteConfig = {
+  enabled: false,
+  port: 3090,
+  bind: '0.0.0.0',
+  ssoVerify: 'http://172.20.10.91:18085/api/v1/auth/sso-verify',
+}
 
 export function normalizeConfigInput(payload: unknown): RemoteConfig {
   if (payload === null || typeof payload !== 'object') throw new Error('配置必须是对象')
@@ -16,5 +23,6 @@ export function normalizeConfigInput(payload: unknown): RemoteConfig {
   // port 0 = OS 分配（测试/高级用法）；UI 默认 3090
   if (port < 0 || port > 65_535) throw new Error(`port 越界（0-65535）：${raw.port}`)
   const bind = String(raw.bind ?? REMOTE_DEFAULTS.bind).trim() || REMOTE_DEFAULTS.bind
-  return { enabled: raw.enabled === true, port, bind }
+  const ssoVerify = String(raw.ssoVerify ?? REMOTE_DEFAULTS.ssoVerify).trim() || REMOTE_DEFAULTS.ssoVerify
+  return { enabled: raw.enabled === true, port, bind, ssoVerify }
 }

@@ -2,25 +2,30 @@
  * dsh-remote：远程访问插件。
  *
  * - 网关：webServer 服务在位且 remote.enabled 时，起独立 HTTP 网关（默认 0.0.0.0:3090），
- *   带配对认证，一切请求反代到回环 dsh webserver（见 gateway.ts / proxy.ts）
+ *   带配对认证，一切请求反代到回环 dsh webserver（见 gateway.ts / proxy.ts）；
+ *   /__remote/exchange 支持御符 SSO 登录即连（sso-verify 验签 → 签 24h 实例令牌）
+ * - 状态暴露：网关启停写 <dsh-home>/plugins/dsh-remote/gateway-state.json（state.ts），
+ *   yuyi 通道心跳透传给御符 → /me/instances 的 address（instance-address-report 契约）
  * - 本地管理：dsh webserver 上的 /dsh-remote/api/*（状态 / 生成配对链接 / 设备管理 / 自更新检查与应用），
  *   供设置页「远程访问」Tab 使用；name/ua 是不可信输入（截断已做，暴露前再剥 tokenHash）
  * - 自更新：GitHub 标签 tarball 覆盖 lib/** + package.json（见 update.ts；
  *   符号链接安装拒绝，暂存校验 + 备份回滚，重启 DSH 后生效）
  * - 配置：settings.yaml 的 remote: 节，热重载（enabled/port/bind 变更即重建网关）
  */
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 // 纯类型导入：载入 @deepseek-ai/dsh-settings 对 Context 的 `.settings` 增补
 // （alpha.2 起 settingsNamespace()/installSettingsSection() 已移除，须经此取服务）。
 import type {} from '@deepseek-ai/dsh-settings'
-import { normalizeConfigInput, type RemoteConfig } from './config.ts'
+import { normalizeConfigInput, REMOTE_DEFAULTS, type RemoteConfig } from './config.ts'
 import { PairingStore } from './tokens.ts'
 import { loadDevices, type DeviceRecord } from './devices.ts'
 import { listAddresses, type AddressInfo } from './addresses.ts'
 import { startGateway, type GatewayHandle } from './gateway.ts'
+import { advertisedAddress, writeGatewayState } from './state.ts'
+import { verifySsoJwt } from './sso.ts'
 import type { Upstream } from './proxy.ts'
 import * as updater from './update.ts'
 
@@ -30,6 +35,7 @@ export const Config = z.object({
   enabled: z.boolean().default(false).description('启用远程访问网关（默认关闭）'),
   port: z.number().default(3090).description('网关监听端口'),
   bind: z.string().default('0.0.0.0').description('绑定地址（可改为 Tailscale IP 等单接口地址）'),
+  ssoVerify: z.string().default(REMOTE_DEFAULTS.ssoVerify).description('御符 sso-verify 验签端点（SSO 登录即连）'),
 })
 
 // alpha.2 起模块级 settingsNamespace()/installSettingsSection() 移除：命名空间用裸
@@ -143,6 +149,29 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
   const rt: RemoteConfig = normalizeConfigInput(config)
   let upstream: Upstream | undefined
   let gateway: GatewayHandle | undefined
+  let gatewayStartedAt = 0
+
+  /**
+   * 状态暴露（instance-address-report 契约 §1）：按当前网关实况写 gateway-state.json，
+   * yuyi 心跳透传给御符 → /me/instances 的 address。
+   * 失败只记录不阻断——状态文件是旁路产物，绝不影响网关本身。
+   */
+  const publishState = (): void => {
+    try {
+      if (gateway !== undefined) {
+        const address = advertisedAddress(rt.bind, gateway.port)
+        writeGatewayState(dshHome(), {
+          enabled: true,
+          startedAt: gatewayStartedAt,
+          ...(address !== undefined ? { address } : {}),
+        })
+      } else {
+        writeGatewayState(dshHome(), { enabled: false })
+      }
+    } catch (error) {
+      record(`网关状态文件写入失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   // 当前注入作用域的卸载闩（按作用域一份）：webServer 服务可能被卸载后重新提供
   // （如改端口热重载），cordis 会先跑旧作用域清理、再重新注入——apply 级永久闩会让
   // 新作用域永远跳过启动。restartGateway 只看「当前作用域」的闩。
@@ -163,7 +192,16 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
         await old.close()
       }
       if (rt.enabled && upstream !== undefined) {
-        const handle = await startGateway({ bind: rt.bind, port: rt.port, upstream, store, pairings, log: record })
+        const handle = await startGateway({
+          bind: rt.bind,
+          port: rt.port,
+          upstream,
+          store,
+          pairings,
+          // SSO 登录即连：验签走御符 sso-verify（形态 B：dsh-remote 不自持 jwtSecret/owner）
+          verifySso: (jwt) => verifySsoJwt(rt.ssoVerify, jwt, hostname()),
+          log: record,
+        })
         if (currentScope === undefined || currentScope.disposed) {
           // startGateway await 期间发生了卸载：立即关闭，不落引用（防孤儿监听）
           await handle.close()
@@ -171,8 +209,10 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
           return
         }
         gateway = handle
+        gatewayStartedAt = Date.now()
         record(`网关已监听 ${rt.bind}:${gateway.port}`)
       }
+      publishState()
     })
     return restarting
   }
@@ -396,6 +436,7 @@ export async function apply(ctx: Context, config: RemoteConfig): Promise<void> {
           const old = gateway
           gateway = undefined
           await old.close()
+          publishState() // 卸载即声明停用（yuyi 下次心跳带 enabled:false）
         }
       })
     })

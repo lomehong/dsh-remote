@@ -18,6 +18,8 @@ export interface DeviceRecord {
   createdAt: number
   lastSeenAt: number
   ua?: string
+  /** 令牌过期时刻（epoch ms）；缺省 = 永不过期（配对码流）。SSO exchange 签发的实例级令牌 ≤24h。 */
+  expiresAt?: number
 }
 
 interface PersistedFile {
@@ -30,9 +32,9 @@ export function devicesFilePath(homeDir: string): string {
 }
 
 export interface DeviceStore {
-  /** 呈递令牌 → 对应设备；无效/已吊销 → undefined。 */
+  /** 呈递令牌 → 对应设备；无效/已吊销/已过期 → undefined。 */
   verify(token: string): DeviceRecord | undefined
-  add(input: { token: string; name?: string; ua?: string }, now: number): DeviceRecord
+  add(input: { token: string; name?: string; ua?: string; expiresAt?: number }, now: number): DeviceRecord
   /** 返回内部引用，调用方不得修改；经管理 API 暴露前须去除 tokenHash。 */
   list(): DeviceRecord[]
   rename(id: string, name: string): boolean
@@ -52,6 +54,8 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
         if (item === null || typeof item !== 'object') continue
         if (typeof item.id !== 'string' || item.id === '') continue
         if (typeof item.tokenHash !== 'string' || item.tokenHash === '') continue
+        // 过期令牌载入即丢弃（实例级短 TTL 令牌重启后不再复活）
+        if (typeof item.expiresAt === 'number' && item.expiresAt <= Date.now()) continue
         devices.set(item.id, {
           id: item.id,
           name: typeof item.name === 'string' && item.name !== '' ? item.name : '远程设备',
@@ -59,6 +63,7 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
           createdAt: typeof item.createdAt === 'number' ? item.createdAt : 0,
           lastSeenAt: typeof item.lastSeenAt === 'number' ? item.lastSeenAt : 0,
           ...(typeof item.ua === 'string' ? { ua: item.ua } : {}),
+          ...(typeof item.expiresAt === 'number' ? { expiresAt: item.expiresAt } : {}),
         })
       }
     }
@@ -94,7 +99,9 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
     verify(token) {
       if (token === '') return undefined
       const fingerprint = deviceTokenFingerprint(token)
+      const now = Date.now()
       for (const device of devices.values()) {
+        if (device.expiresAt !== undefined && device.expiresAt <= now) continue
         if (tokensMatch(device.tokenHash, fingerprint)) return device
       }
       return undefined
@@ -107,6 +114,7 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
         createdAt: now,
         lastSeenAt: now,
         ...(input.ua !== undefined ? { ua: input.ua } : {}),
+        ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
       }
       devices.set(device.id, device)
       dirty = true

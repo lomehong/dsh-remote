@@ -5,15 +5,18 @@ export interface DeviceRecord {
     createdAt: number;
     lastSeenAt: number;
     ua?: string;
+    /** 令牌过期时刻（epoch ms）；缺省 = 永不过期（配对码流）。SSO exchange 签发的实例级令牌 ≤24h。 */
+    expiresAt?: number;
 }
 export declare function devicesFilePath(homeDir: string): string;
 export interface DeviceStore {
-    /** 呈递令牌 → 对应设备；无效/已吊销 → undefined。 */
+    /** 呈递令牌 → 对应设备；无效/已吊销/已过期 → undefined。 */
     verify(token: string): DeviceRecord | undefined;
     add(input: {
         token: string;
         name?: string;
         ua?: string;
+        expiresAt?: number;
     }, now: number): DeviceRecord;
     /** 返回内部引用，调用方不得修改；经管理 API 暴露前须去除 tokenHash。 */
     list(): DeviceRecord[];

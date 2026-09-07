@@ -35,6 +35,22 @@ describe('DeviceStore', () => {
     expect(store.verify(token)).toBeUndefined()
   })
 
+  it('实例级短 TTL 令牌：expiresAt 过期即 verify 失败，重启加载直接丢弃', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
+    const store = await loadDevices(dir)
+    const fresh = generateDeviceToken()
+    const stale = generateDeviceToken()
+    const now = Date.now()
+    store.add({ token: fresh, name: 'SSO 有效', expiresAt: now + 60_000 }, now)
+    store.add({ token: stale, name: 'SSO 过期', expiresAt: now - 1 }, now)
+    expect(store.verify(fresh)).toBeDefined()
+    expect(store.verify(stale)).toBeUndefined() // 已过期
+    await store.flush()
+    const reloaded = await loadDevices(dir)
+    expect(reloaded.verify(fresh)?.name).toBe('SSO 有效')
+    expect(reloaded.list()).toHaveLength(1) // 过期项载入即丢弃
+  })
+
   it('flush 失败保留 dirty：障碍移除后再次 flush 重试落盘', async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
     // devices.json 先建成目录：loadDevices 读到即当全新表；rename 目标是目录 → persist 必失败

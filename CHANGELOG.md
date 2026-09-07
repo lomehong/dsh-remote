@@ -3,6 +3,22 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.0] — 2026-09-04
+
+### 新增
+
+- **SSO 登录即连** `POST /__remote/exchange`：桌面端持御符 SSO JWT 调用 → 本机调御符
+  sso-verify（验签 + uid==owner 一跳完成，形态 B：本插件不自持 jwtSecret/owner）→
+  签发实例级短 TTL（24h）设备令牌，响应与配对同形状 `{ok, token, deviceId, name}`；
+  按 IP 限速、跨站防护、坏正文/未配置/御符不可达分别映射 400/503/502
+- **网关状态暴露** `gateway-state.json`（instance-address-report 契约 §1）：网关启停写
+  `<dsh-home>/plugins/dsh-remote/gateway-state.json`（原子写 0600）——
+  `{address, enabled:true, startedAt}` 或 `{enabled:false}`，yuyi 通道心跳透传给御符，
+  `/me/instances` 的 address 由此有值；本插件不直连御符、不持任何御符凭证
+- 配置项 `remote.ssoVerify`：御符 sso-verify 端点（默认内网 gateway）
+- 设备令牌支持可选 `expiresAt`（实例级短 TTL 用；过期即 verify 失败、重启加载丢弃；
+  配对码流令牌不受影响）
+
 ## [0.1.3] — 2026-08-29
 
 ### 修复

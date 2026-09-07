@@ -1,6 +1,9 @@
 /**
  * 远程访问网关：带配对认证的反向代理。
- * - /__remote/pair 是唯一认证豁免端点（GET 浏览器流 303+cookie；POST 桌面流 JSON token），按 IP 限速
+ * - /__remote/pair 与 /__remote/exchange 是仅有的认证豁免端点，均按 IP 限速：
+ *   pair（GET 浏览器流 303+cookie；POST 桌面流 JSON token）；
+ *   exchange（POST {jwt} → 御符 sso-verify 验签 → 签实例级短 TTL 设备令牌，
+ *   与配对响应同形状，instance-address-report 契约 §sso-verify/形态 B）
  * - 其余一切请求/upgrade 须持有效凭证（cookie dsh_remote 或 x-remote-token 头）才透传
  * - 无效令牌尝试计入限速（防爆破）；裸 401 不计（浏览器首访是正常路径）
  */
@@ -9,9 +12,13 @@ import type { Duplex } from 'node:stream'
 import { proxyRequest, proxyUpgrade, upstreamAuthority, type Upstream } from './proxy.ts'
 import { generateDeviceToken, type PairingStore } from './tokens.ts'
 import type { DeviceStore } from './devices.ts'
+import type { SsoVerifyResult } from './sso.ts'
 import { RateLimiter } from './ratelimit.ts'
 
 export const REMOTE_COOKIE = 'dsh_remote'
+
+/** exchange 签发的实例级令牌 TTL（契约：≤24h，桌面侧随刷新重取）。 */
+export const EXCHANGE_TOKEN_TTL_MS = 24 * 60 * 60_000
 
 export interface GatewayOptions {
   bind: string
@@ -19,6 +26,8 @@ export interface GatewayOptions {
   upstream: Upstream
   store: DeviceStore
   pairings: PairingStore
+  /** SSO exchange 的验签函数（默认走御符 sso-verify；测试注入桩）。缺省 = exchange 端点 503。 */
+  verifySso?: (jwt: string) => Promise<SsoVerifyResult>
   log: (line: string) => void
   now?: () => number
 }
@@ -55,6 +64,8 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
   const now = options.now ?? Date.now
   const pairLimiter = new RateLimiter(10, 60_000, now)
   const badTokenLimiter = new RateLimiter(30, 60_000, now)
+  // exchange 独立限速（防经 SSO 验签枚举/重放；与 pair 同强度）
+  const exchangeLimiter = new RateLimiter(10, 60_000, now)
 
   const deny = (res: ServerResponse, status: number, message: string): void => {
     if (res.headersSent) { res.end(); return }
@@ -94,6 +105,10 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       const url = new URL(req.url ?? '/', 'http://gateway.local')
       if (url.pathname === '/__remote/pair') {
         await handlePair(req, res, url)
+        return
+      }
+      if (url.pathname === '/__remote/exchange') {
+        await handleExchange(req, res)
         return
       }
       const token = credentialToken(req)
@@ -182,10 +197,70 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
     res.end()
   }
 
+  /**
+   * SSO 登录即连：POST {jwt} → 御符 sso-verify（验签 + uid==owner 一跳完成）
+   * → 签实例级短 TTL（24h）设备令牌，响应与配对同形状 {ok, token, deviceId, name}。
+   * 验签拒绝 → 401；御符不可达/异常 → 502；未配置验签 → 503。
+   */
+  async function handleExchange(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const json = (status: number, payload: unknown): void => {
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify(payload))
+    }
+    if (req.method !== 'POST') {
+      json(405, { ok: false, error: 'method not allowed' })
+      return
+    }
+    if (!exchangeLimiter.check(clientKey(req))) {
+      json(429, { ok: false, error: 'exchange 尝试过于频繁，请稍后再试' })
+      return
+    }
+    if (!sameOrigin(req)) {
+      json(403, { ok: false, error: 'cross-origin denied' })
+      return
+    }
+    const verifySso = options.verifySso
+    if (verifySso === undefined) {
+      json(503, { ok: false, error: '未配置 SSO 验签地址（remote.ssoVerify）' })
+      return
+    }
+    let jwt = ''
+    try {
+      const parsed = JSON.parse(await readBody(req)) as { jwt?: unknown }
+      jwt = typeof parsed.jwt === 'string' ? parsed.jwt : ''
+    } catch { /* jwt 保持空 → 走 400 */ }
+    if (jwt === '') {
+      json(400, { ok: false, error: '请求体须为 {jwt}' })
+      return
+    }
+    let verdict: SsoVerifyResult
+    try {
+      verdict = await verifySso(jwt)
+    } catch (error) {
+      log(`sso-verify 调用失败：${error instanceof Error ? error.message : String(error)}`)
+      json(502, { ok: false, error: '御符验签服务不可达' })
+      return
+    }
+    if (!verdict.ok) {
+      log(`exchange 被拒（sso-verify 未通过）来自 ${clientKey(req)}`)
+      json(401, { ok: false, error: 'sso_verify_rejected' })
+      return
+    }
+    const token = generateDeviceToken()
+    const who = verdict.usr ?? '用户'
+    const device = store.add(
+      { token, name: `SSO ${who}`, expiresAt: now() + EXCHANGE_TOKEN_TTL_MS },
+      now(),
+    )
+    log(`SSO 设备已签发实例令牌：${device.name}（${device.id}，24h）`)
+    json(200, { ok: true, token, deviceId: device.id, name: device.name })
+  }
+
   function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     try {
       const url = new URL(req.url ?? '/', 'http://gateway.local')
       if (url.pathname === '/__remote/pair') { rawDeny(socket, 405, 'method not allowed'); return }
+      if (url.pathname === '/__remote/exchange') { rawDeny(socket, 405, 'method not allowed'); return }
       const token = credentialToken(req)
       const device = token === undefined ? undefined : store.verify(token)
       if (device === undefined) {

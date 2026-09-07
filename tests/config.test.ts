@@ -2,8 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { normalizeConfigInput } from '../src/config.ts'
 
 describe('normalizeConfigInput', () => {
-  it('默认值：关闭 / 3090 / 0.0.0.0', () => {
-    expect(normalizeConfigInput({})).toEqual({ enabled: false, port: 3090, bind: '0.0.0.0' })
+  it('默认值：关闭 / 3090 / 0.0.0.0 / 内网御符 sso-verify', () => {
+    expect(normalizeConfigInput({})).toEqual({
+      enabled: false,
+      port: 3090,
+      bind: '0.0.0.0',
+      ssoVerify: 'http://172.20.10.91:18085/api/v1/auth/sso-verify',
+    })
+  })
+  it('ssoVerify 空串回退默认；可覆盖', () => {
+    expect(normalizeConfigInput({ ssoVerify: '' }).ssoVerify).toContain('/api/v1/auth/sso-verify')
+    expect(normalizeConfigInput({ ssoVerify: 'http://yufu.example/api/v1/auth/sso-verify' }).ssoVerify)
+      .toBe('http://yufu.example/api/v1/auth/sso-verify')
   })
   it('port 允许 0（OS 随机，测试用）；拒绝越界', () => {
     expect(normalizeConfigInput({ enabled: true, port: 0 }).port).toBe(0)

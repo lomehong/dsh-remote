@@ -3,6 +3,8 @@ export interface RemoteConfig {
     enabled: boolean;
     port: number;
     bind: string;
+    /** 御符 sso-verify 内省端点（exchange 登录即连用；形态 B 契约）。 */
+    ssoVerify: string;
 }
 export declare const REMOTE_DEFAULTS: RemoteConfig;
 export declare function normalizeConfigInput(payload: unknown): RemoteConfig;
