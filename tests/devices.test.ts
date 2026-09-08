@@ -51,6 +51,44 @@ describe('DeviceStore', () => {
     expect(reloaded.list()).toHaveLength(1) // 过期项载入即丢弃
   })
 
+  it('ensureSso：同 uid 轮换复用（id 稳定/指纹更新/延期），不同 uid 独立', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
+    const store = await loadDevices(dir)
+    const now = Date.now()
+    // ① 首次签发：新建
+    const d1 = store.ensureSso({ uid: 'u1', usr: 'hz0704027', token: 'tok-1', expiresAt: now + 1000 }, now)
+    expect(d1.id).toBe(store.verify('tok-1')?.id)
+    // ② 同 uid 重登：轮换复用（id 不变、旧令牌失效、新令牌生效、有效期顺延）
+    const d2 = store.ensureSso({ uid: 'u1', usr: 'hz0704027', token: 'tok-2', expiresAt: now + 2000 }, now + 500)
+    expect(d2.id).toBe(d1.id)
+    expect(store.verify('tok-1')).toBeUndefined() // 旧令牌已被轮换失效
+    expect(store.verify('tok-2')?.expiresAt).toBe(now + 2000)
+    // ③ 不同 uid 独立建设备
+    store.ensureSso({ uid: 'u2', usr: 'other', token: 'tok-u2', expiresAt: now + 1000 }, now)
+    expect(store.verify('tok-u2')).toBeDefined()
+    expect(store.verify('tok-2')).toBeDefined() // u1 的不受影响
+  })
+
+  it('ensureSso 旧版迁移：同名无 ssoUid 的存量设备被接管（补 uid，不新增条目）', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
+    const store = await loadDevices(dir)
+    const now = Date.now()
+    // 模拟旧版残留：每次登录各建一条、无 ssoUid
+    const legacy1 = generateDeviceToken()
+    const legacy2 = generateDeviceToken()
+    store.add({ token: legacy1, name: 'SSO hz0704027', expiresAt: now + 400_000 }, now)
+    store.add({ token: legacy2, name: 'SSO hz0704027', expiresAt: now + 400_000 }, now + 1)
+    const before = store.list().length
+    // 首次带 ssoUid 的签发：接管最新的同名存量（不新建），其余同名保留至自然过期
+    const d = store.ensureSso({ uid: 'u1', usr: 'hz0704027', token: 'tok-new', expiresAt: now + 3000 }, now)
+    expect(store.verify('tok-new')?.id).toBe(d.id)
+    expect(d.ssoUid).toBe('u1')
+    expect(store.list().length).toBe(before)
+    // 再登 → 走 ssoUid 精确匹配，稳定复用同一条
+    const again = store.ensureSso({ uid: 'u1', usr: 'hz0704027', token: 'tok-newer', expiresAt: now + 4000 }, now)
+    expect(again.id).toBe(d.id)
+  })
+
   it('flush 失败保留 dirty：障碍移除后再次 flush 重试落盘', async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
     // devices.json 先建成目录：loadDevices 读到即当全新表；rename 目标是目录 → persist 必失败

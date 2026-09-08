@@ -7,6 +7,8 @@ export interface DeviceRecord {
     ua?: string;
     /** 令牌过期时刻（epoch ms）；缺省 = 永不过期（配对码流）。SSO exchange 签发的实例级令牌 ≤24h。 */
     expiresAt?: number;
+    /** SSO exchange 签发标记：签发时的御符 uid（一账号一设备，重登轮换令牌不新增条目）。 */
+    ssoUid?: string;
 }
 export declare function devicesFilePath(homeDir: string): string;
 export interface DeviceStore {
@@ -17,6 +19,14 @@ export interface DeviceStore {
         name?: string;
         ua?: string;
         expiresAt?: number;
+    }, now: number): DeviceRecord;
+    /** SSO 设备幂等签发：同 uid 已有设备 → 轮换令牌（换指纹+延期，id/名称稳定）；
+     *  旧版迁移：同名无 ssoUid 的 exchange 设备 → 轮换并补记 uid；都没有 → 新建。 */
+    ensureSso(input: {
+        uid: string;
+        usr: string;
+        token: string;
+        expiresAt: number;
     }, now: number): DeviceRecord;
     /** 返回内部引用，调用方不得修改；经管理 API 暴露前须去除 tokenHash。 */
     list(): DeviceRecord[];

@@ -87,6 +87,17 @@ describe('/__remote/exchange', () => {
     expect(await resp.text()).toBe('dsh says: /')
   })
 
+  it('幂等签发：同 uid 两次 exchange → 同一 deviceId（轮换不堆积），旧令牌随之失效', async () => {
+    const { gw } = await startWith(async () => ({ ok: true, uid: 'u1', usr: 'hz0704027' }))
+    const r1 = await postExchange(gw.port, JSON.stringify({ jwt: 'login-1' }))
+    const r2 = await postExchange(gw.port, JSON.stringify({ jwt: 'login-2' }))
+    expect(r1.status).toBe(200)
+    expect(r2.status).toBe(200)
+    expect(r2.json.deviceId).toBe(r1.json.deviceId) // 不堆积
+    const old = await fetch(`http://127.0.0.1:${gw.port}/`, { headers: { 'x-remote-token': String(r1.json.token) } })
+    expect(old.status).toBe(401) // 旧令牌被轮换失效
+  })
+
   it('验签未通过 → 401 sso_verify_rejected', async () => {
     const { gw } = await startWith(async () => ({ ok: false }))
     const { status, json } = await postExchange(gw.port, JSON.stringify({ jwt: 'bad-jwt' }))

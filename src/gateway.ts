@@ -266,12 +266,14 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
       return
     }
     const token = generateDeviceToken()
-    const who = verdict.usr ?? '用户'
-    const device = store.add(
-      { token, name: `SSO ${who}`, expiresAt: now() + EXCHANGE_TOKEN_TTL_MS },
-      now(),
-    )
-    log(`SSO 设备已签发实例令牌：${device.name}（${device.id}，24h）`)
+    const uid = verdict.uid ?? ''
+    // 一账号一设备：同 uid 幂等签发（轮换令牌），避免每次登录堆积同名设备条目
+    const verb = uid !== '' ? '轮换' : '签发'
+    const device =
+      uid !== ''
+        ? store.ensureSso({ uid, usr: verdict.usr ?? '', token, expiresAt: now() + EXCHANGE_TOKEN_TTL_MS }, now())
+        : store.add({ token, name: `SSO ${verdict.usr ?? '用户'}`, expiresAt: now() + EXCHANGE_TOKEN_TTL_MS }, now())
+    log(`SSO 设备已${verb}实例令牌：${device.name}（${device.id}，24h）`)
     json(200, { ok: true, token, deviceId: device.id, name: device.name })
   }
 

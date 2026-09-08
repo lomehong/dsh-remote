@@ -20,6 +20,8 @@ export interface DeviceRecord {
   ua?: string
   /** 令牌过期时刻（epoch ms）；缺省 = 永不过期（配对码流）。SSO exchange 签发的实例级令牌 ≤24h。 */
   expiresAt?: number
+  /** SSO exchange 签发标记：签发时的御符 uid（一账号一设备，重登轮换令牌不新增条目）。 */
+  ssoUid?: string
 }
 
 interface PersistedFile {
@@ -35,6 +37,9 @@ export interface DeviceStore {
   /** 呈递令牌 → 对应设备；无效/已吊销/已过期 → undefined。 */
   verify(token: string): DeviceRecord | undefined
   add(input: { token: string; name?: string; ua?: string; expiresAt?: number }, now: number): DeviceRecord
+  /** SSO 设备幂等签发：同 uid 已有设备 → 轮换令牌（换指纹+延期，id/名称稳定）；
+   *  旧版迁移：同名无 ssoUid 的 exchange 设备 → 轮换并补记 uid；都没有 → 新建。 */
+  ensureSso(input: { uid: string; usr: string; token: string; expiresAt: number }, now: number): DeviceRecord
   /** 返回内部引用，调用方不得修改；经管理 API 暴露前须去除 tokenHash。 */
   list(): DeviceRecord[]
   rename(id: string, name: string): boolean
@@ -64,6 +69,7 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
           lastSeenAt: typeof item.lastSeenAt === 'number' ? item.lastSeenAt : 0,
           ...(typeof item.ua === 'string' ? { ua: item.ua } : {}),
           ...(typeof item.expiresAt === 'number' ? { expiresAt: item.expiresAt } : {}),
+          ...(typeof item.ssoUid === 'string' && item.ssoUid !== '' ? { ssoUid: item.ssoUid } : {}),
         })
       }
     }
@@ -124,6 +130,59 @@ export async function loadDevices(homeDir: string): Promise<DeviceStore> {
         // 落盘失败不阻断内存操作；dirty 仍为 true，由 flush 兜底重试
       }
       return device
+    },
+    ensureSso(input, now) {
+      // ① ssoUid 精确匹配（未过期）→ 轮换复用
+      let target: DeviceRecord | undefined
+      for (const d of devices.values()) {
+        if (d.ssoUid === input.uid && (d.expiresAt === undefined || d.expiresAt > now)) {
+          target = d
+          break
+        }
+      }
+      // ② 旧版迁移：同名（SSO <usr>）且无 ssoUid 的 exchange 设备 → 取最新一条轮换并补记 uid
+      if (target === undefined) {
+        const legacyName = `SSO ${input.usr}`
+        let latest: DeviceRecord | undefined
+        for (const d of devices.values()) {
+          if (d.ssoUid === undefined && d.name === legacyName && (d.expiresAt === undefined || d.expiresAt > now)) {
+            if (latest === undefined || d.createdAt > latest.createdAt) latest = d
+          }
+        }
+        target = latest
+      }
+      if (target === undefined) {
+        // ③ 新建（一账号一设备的首次签发）
+        const device: DeviceRecord = {
+          id: randomBytes(6).toString('hex'),
+          name: `SSO ${input.usr}`,
+          tokenHash: deviceTokenFingerprint(input.token),
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: input.expiresAt,
+          ssoUid: input.uid,
+        }
+        devices.set(device.id, device)
+        dirty = true
+        try {
+          persist()
+        } catch {
+          // 同 add：落盘失败由 flush 兜底
+        }
+        return device
+      }
+      // 轮换：换令牌指纹 + 延期 + 补记 uid（旧版迁移），id/名称保持稳定
+      target.tokenHash = deviceTokenFingerprint(input.token)
+      target.expiresAt = input.expiresAt
+      target.lastSeenAt = now
+      if (target.ssoUid === undefined) target.ssoUid = input.uid
+      dirty = true
+      try {
+        persist()
+      } catch {
+        // 落盘失败由 flush 兜底
+      }
+      return target
     },
     list() {
       return [...devices.values()]
