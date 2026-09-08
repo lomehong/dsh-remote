@@ -3,6 +3,14 @@
 本插件所有显著变更记录于此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 发布纪律：**tag = release**（每个发布对应一个 GitHub 标签，自更新以标签 tarball 为源）。
 
+## [0.2.8] — 2026-09-08
+
+### 修复
+
+- web-auth 决策自证日志（token 有/无 → 落点）+ connection 捕获时记录对象形状
+  （keys / authenticatedUrl / launchToken 字段存在性）——「桥空转」类问题从猜变读
+- launch token 提取增加 authenticatedUrl() 兜底：rc.1 若将 launchToken 字段改名/
+  私有化，公开方法仍可借任意 base 生成认证 URL 后抽出 token
 ## [0.2.7] — 2026-09-07
 
 ### 修复
@@ -126,4 +134,5 @@
 ### 新增
 
 - 首个版本：配对认证网关（HTTP+WS 反代、设备管理、限速、设置页、CI）
+
 

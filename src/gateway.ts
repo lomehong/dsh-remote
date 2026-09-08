@@ -31,6 +31,8 @@ export interface GatewayOptions {
   /** 上游 web 认证桥（rc.1+）：返回 dsh web 当前 launch token（无/旧版宿主 → undefined）。
    * 供 /__remote/web-auth 把设备凭证与上游 30 天会话一次导航种齐。 */
   webLaunchToken?: () => string | undefined
+  /** web-auth 决策日志（诊断用；插件侧传 record）。 */
+  webAuthLog?: (line: string) => void
   log: (line: string) => void
   now?: () => number
 }
@@ -132,6 +134,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHand
         // 无害）。本端点在设备凭证之后，未认证请求到不了这里。
         const webToken = options.webLaunchToken?.()
         const location = webToken !== undefined && webToken !== '' ? `/?token=${encodeURIComponent(webToken)}` : '/'
+        options.webAuthLog?.(`web-auth 决策：token=${webToken !== undefined && webToken !== '' ? '有' : '无'} → ${location}`)
         res.writeHead(302, { location, 'cache-control': 'no-store' })
         res.end()
         return

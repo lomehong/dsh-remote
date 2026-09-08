@@ -26,6 +26,8 @@ export interface GatewayOptions {
     /** 上游 web 认证桥（rc.1+）：返回 dsh web 当前 launch token（无/旧版宿主 → undefined）。
      * 供 /__remote/web-auth 把设备凭证与上游 30 天会话一次导航种齐。 */
     webLaunchToken?: () => string | undefined;
+    /** web-auth 决策日志（诊断用；插件侧传 record）。 */
+    webAuthLog?: (line: string) => void;
     log: (line: string) => void;
     now?: () => number;
 }
